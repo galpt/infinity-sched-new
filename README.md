@@ -33,7 +33,7 @@ perl scripts/checkpatch.pl --strict --patch patches/7.2/cpu/rt/0001-infinity-rt-
 perl scripts/checkpatch.pl --strict --patch patches/7.2/gpu/0001-infinity-drm-7.2.patch
 ```
 
-Fallback is revert of one patch or of the whole series. Each patch reverses cleanly on its own, and the drm policy reverts at runtime with the boot parameter below. To drop the series from a tree, reverse in gpu, rt, fair order.
+Fallback is revert of one patch or of the whole series. Each patch reverses cleanly on its own, and the drm policy reverts at runtime with sched_policy=1. To drop the series from a tree, reverse in gpu, rt, fair order.
 
 ```sh
 cd /path/to/linux-7.2.6
@@ -48,27 +48,17 @@ Apply checks pass with zero fuzz in both series order and reverse order. Each of
 
 Independent revert of each patch restores the stock file. Independent review holds, including a fix for a livelock found in an earlier revision.
 
-Concretely, the fair patch was checked against stock 7.2.6 EEVDF sources with `git apply --check`, then stacked with rt and gpu in series order and again in reverse order.
+On a booted kernel, confirm Infinity is running by reading the debugfs boxes. Counters at zero on an idle machine mean the discipline is live but quiet. Rising head and tail counts under load mean it is scheduling.
 
-The drm select scan was reviewed for the blocked head case so a stalled entity cannot wedge the ring. Review also closed the livelock path found in an earlier revision.
+```sh
+cat /sys/kernel/debug/infinity_fair
+cat /sys/kernel/debug/infinity_rt
+cat /sys/kernel/debug/infinity_drm
+```
 
-All verification so far is at source level. Kernel build plus boot plus schbench and cyclictest plus GPU kunit remain open.
+Every constant stays frozen. The 1 ms quantum base, the 7 plus 1 bound and the policy default are compiled in with no runtime tunables. vruntime and tree fields in `/proc/sched_debug` are frozen under Infinity, so consult debugfs for live state.
 
-## What still needs testing
-
-What still needs testing is a full kernel build plus a boot run, followed by schbench and cyclictest on the CPU side and GPU kunit on the drm side.
-
-Scale checks on large CPU counts and mixed interactive plus batch mixes are still open. Reports from testers on the 7.2 tree will shape the deferred ports.
-
-Until those runs land, treat every performance claim here as a design goal rather than a measured result.
-
-## Known behaviors
-
-- *"Wakeup preemption is positional by design (head entity preempts). A tail wakee waits at most until the current head exhausts its quantum and rotates to tail on expiry — worst-case added latency ≈ 1 max quantum (admission share q = Q_BASE·w/W ≤ Q_BASE = 1 ms). No weight-aware preemption is performed (out of scope)."*
-- *"Known behavior (signed): `sched_rr_get_interval` returns 0 for RR (RR quantum neutered; 0 = infinity per the timespec convention). `sched_rr_timeslice` sysctl//proc entries and `time_slice` storage are retained ABI-only and side-effect-free."*
-- DRM revert: `sched_policy=1` boot param restores FIFO; Infinity is default (POLICY_INFINITY=3).
-
-Live discipline stats are in debugfs: `/sys/kernel/debug/infinity_fair` (fair, this track), `/sys/kernel/debug/infinity_rt` (rt track) and `/sys/kernel/debug/infinity_drm` (drm track). Every constant stays frozen — the 1 ms quantum base, the 7 plus 1 bound and the policy default are compiled in with no runtime tunables. vruntime and tree fields in `/proc/sched_debug` are frozen under Infinity, so consult debugfs for live state.
+Build and boot runs are still open, so treat performance claims as design goals until measured.
 
 ## Credits
 
