@@ -1,0 +1,974 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Infinity Scheduler <infinity@example.com>
+Date: Sun, 21 Sep 2026 00:00:00 +0000
+Subject: [PATCH] infinity fair S1a+S1b: LIFO + weighted quantum/expiry
+
+S1a slice: structures + LIFO order + tree retirement only.
+S1b slice: weighted quantum + expiry + preempt + yield + reweight-delta
++ dead-code cleanup (vruntime retirement, no stats/sysctl/Kconfig/trace).
+
+Signed-off-by: Infinity Scheduler <infinity@example.com>
+---
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -598,6 +598,10 @@ struct sched_entity {
+ 	u64				vprot;
+ 	u64				slice;
+ 
++	/* Infinity LIFO node (authoritative ordering). */
++	struct list_head		inf_node;
++	u64				inf_slice_rem;
++
+ 	u64				nr_migrations;
+ 
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -4584,6 +4584,8 @@ static void __sched_fork(u64 clone_flags, struct task_struct *p)
+ 	p->se.vlag			= 0;
+ 	p->se.rel_deadline		= 0;
+ 	INIT_LIST_HEAD(&p->se.group_node);
++	INIT_LIST_HEAD(&p->se.inf_node);
++	p->se.inf_slice_rem		= 0;
+ 
+ 	/* A delayed task cannot be in clone(). */
+ 	WARN_ON_ONCE(p->se.sched_delayed);
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -79,6 +79,11 @@ unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
+ unsigned int sysctl_sched_base_slice			= 700000ULL;
+ static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
+ 
++/*
++ * Infinity scheduler weighted quantum base (frozen, no tunable).
++ */
++#define INFINITY_Q_BASE_NS 1000000ULL
++
+ __read_mostly unsigned int sysctl_sched_migration_cost	= 500000UL;
+ 
+ static int __init setup_sched_thermal_decay_shift(char *str)
+@@ -682,79 +687,6 @@ static inline unsigned long avg_vruntime_weight(struct cfs_rq *cfs_rq, unsigned
+ 	return w;
+ }
+ 
+-static inline void
+-__sum_w_vruntime_add(struct cfs_rq *cfs_rq, struct sched_entity *se)
+-{
+-	unsigned long weight = avg_vruntime_weight(cfs_rq, se->load.weight);
+-	s64 w_vruntime, key = entity_key(cfs_rq, se);
+-
+-	w_vruntime = key * weight;
+-	WARN_ON_ONCE((w_vruntime >> 63) != (w_vruntime >> 62));
+-
+-	cfs_rq->sum_w_vruntime += w_vruntime;
+-	cfs_rq->sum_weight += weight;
+-}
+-
+-static void
+-sum_w_vruntime_add_paranoid(struct cfs_rq *cfs_rq, struct sched_entity *se)
+-{
+-	unsigned long weight;
+-	s64 key, tmp;
+-
+-again:
+-	weight = avg_vruntime_weight(cfs_rq, se->load.weight);
+-	key = entity_key(cfs_rq, se);
+-
+-	if (check_mul_overflow(key, weight, &key))
+-		goto overflow;
+-
+-	if (check_add_overflow(cfs_rq->sum_w_vruntime, key, &tmp))
+-		goto overflow;
+-
+-	cfs_rq->sum_w_vruntime = tmp;
+-	cfs_rq->sum_weight += weight;
+-	return;
+-
+-overflow:
+-	/*
+-	 * There's gotta be a limit -- if we're still failing at this point
+-	 * there's really nothing much to be done about things.
+-	 */
+-	BUG_ON(cfs_rq->sum_shift >= 10);
+-	cfs_rq->sum_shift++;
+-
+-	/*
+-	 * Note: \Sum (k_i * (w_i >> 1)) != (\Sum (k_i * w_i)) >> 1
+-	 */
+-	cfs_rq->sum_w_vruntime = 0;
+-	cfs_rq->sum_weight = 0;
+-
+-	for (struct rb_node *node = cfs_rq->tasks_timeline.rb_leftmost;
+-	     node; node = rb_next(node))
+-		__sum_w_vruntime_add(cfs_rq, __node_2_se(node));
+-
+-	goto again;
+-}
+-
+-static void
+-sum_w_vruntime_add(struct cfs_rq *cfs_rq, struct sched_entity *se)
+-{
+-	if (sched_feat(PARANOID_AVG))
+-		return sum_w_vruntime_add_paranoid(cfs_rq, se);
+-
+-	__sum_w_vruntime_add(cfs_rq, se);
+-}
+-
+-static void
+-sum_w_vruntime_sub(struct cfs_rq *cfs_rq, struct sched_entity *se)
+-{
+-	unsigned long weight = avg_vruntime_weight(cfs_rq, se->load.weight);
+-	s64 key = entity_key(cfs_rq, se);
+-
+-	cfs_rq->sum_w_vruntime -= key * weight;
+-	cfs_rq->sum_weight -= weight;
+-}
+-
+ static inline
+ void update_zero_vruntime(struct cfs_rq *cfs_rq, s64 delta)
+ {
+@@ -779,38 +711,9 @@ void update_zero_vruntime(struct cfs_rq *cfs_rq, s64 delta)
+  */
+ u64 avg_vruntime(struct cfs_rq *cfs_rq)
+ {
+-	struct sched_entity *curr = cfs_rq->curr;
+-	long weight = cfs_rq->sum_weight;
+-	s64 delta = 0;
+-
+-	if (curr && !curr->on_rq)
+-		curr = NULL;
+-
+-	if (weight) {
+-		s64 runtime = cfs_rq->sum_w_vruntime;
+-
+-		if (curr) {
+-			unsigned long w = avg_vruntime_weight(cfs_rq, curr->load.weight);
+-
+-			runtime += entity_key(cfs_rq, curr) * w;
+-			weight += w;
+-		}
+-
+-		/* sign flips effective floor / ceiling */
+-		if (runtime < 0)
+-			runtime -= (weight - 1);
+-
+-		delta = div64_long(runtime, weight);
+-	} else if (curr) {
+-		/*
+-		 * When there is but one element, it is the average.
+-		 */
+-		delta = curr->vruntime - cfs_rq->zero_vruntime;
+-	}
+-
+-	update_zero_vruntime(cfs_rq, delta);
+-
+-	return cfs_rq->zero_vruntime;
++	/* Infinity: vruntime retired, tree kept empty; return 0-safe. */
++	(void)cfs_rq;
++	return 0;
+ }
+ 
+ static inline u64 cfs_rq_max_slice(struct cfs_rq *cfs_rq);
+@@ -829,16 +732,10 @@ static inline u64 cfs_rq_max_slice(struct cfs_rq *cfs_rq);
+  *
+  *   -r_max < lag < max(r_max, q)
+  */
+-static s64 entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se, u64 avruntime)
+-{
+-	u64 max_slice = cfs_rq_max_slice(cfs_rq) + TICK_NSEC;
+-	s64 vlag, limit;
+-
+-	vlag = avruntime - se->vruntime;
+-	limit = calc_delta_fair(max_slice, se);
+-
+-	return clamp(vlag, -limit, limit);
+-}
++/*
++ * Infinity: entity_lag retired with vruntime (kept empty tree).
++ * Former EEVDF lag helper deleted to avoid -Wunused-function.
++ */
+ 
+ /*
+  * Delayed dequeue aims to reduce the negative lag of a dequeued task. While
+@@ -858,20 +755,10 @@ static s64 entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se, u64 avrunt
+ static __always_inline
+ bool update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+-	u64 avruntime = avg_vruntime(cfs_rq);
+-	s64 vlag = entity_lag(cfs_rq, se, avruntime);
+-
+-	WARN_ON_ONCE(!se->on_rq);
+-
+-	if (se->sched_delayed) {
+-		/* previous vlag < 0 otherwise se would not be delayed */
+-		vlag = max(vlag, se->vlag);
+-		if (sched_feat(DELAY_ZERO))
+-			vlag = min(vlag, 0);
+-	}
+-	se->vlag = vlag;
+-
+-	return avruntime - vlag != se->vruntime;
++	/* Infinity: vruntime retired; no lag to update. */
++	(void)cfs_rq;
++	(void)se;
++	return false;
+ }
+ 
+ /*
+@@ -971,11 +858,6 @@ static inline u64 cfs_rq_max_slice(struct cfs_rq *cfs_rq)
+ 	return max_slice;
+ }
+ 
+-static inline bool __entity_less(struct rb_node *a, const struct rb_node *b)
+-{
+-	return entity_before(__node_2_se(a), __node_2_se(b));
+-}
+-
+ static inline void __min_vruntime_update(struct sched_entity *se, struct rb_node *node)
+ {
+ 	if (node) {
+@@ -1035,22 +917,39 @@ RB_DECLARE_CALLBACKS(static, min_vruntime_cb, struct sched_entity,
+ 		     run_node, min_vruntime, min_vruntime_update);
+ 
+ /*
+- * Enqueue an entity into the rb-tree:
++ * Enqueue an entity into the Infinity LIFO runqueue (authoritative).
+  */
+-static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
++static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
++			     int flags)
+ {
+-	sum_w_vruntime_add(cfs_rq, se);
+-	se->min_vruntime = se->vruntime;
+-	se->min_slice = se->slice;
+-	rb_add_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
+-				__entity_less, &min_vruntime_cb);
++	u32 seq;
++
++	WARN_ON_ONCE(!list_empty(&se->inf_node));
++	if (cfs_rq->curr == se || (flags & ENQUEUE_HEAD)) {
++		list_add(&se->inf_node, &cfs_rq->inf_list);
++		goto account;
++	}
++
++	seq = cfs_rq->inf_seq++;
++	/* NOTE: tail insert must stay in sync with the put_prev_entity
++	 * expired-tail path (forced tail, no seq advance).
++	 */
++	if (seq == (u32)-1 || (seq & 7) == 7)
++		list_add_tail(&se->inf_node, &cfs_rq->inf_list);
++	else
++		list_add(&se->inf_node, &cfs_rq->inf_list);
++
++account:
++	cfs_rq->inf_w_sum += se->load.weight;
+ }
+ 
+ static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+-	rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
+-				  &min_vruntime_cb);
+-	sum_w_vruntime_sub(cfs_rq, se);
++	list_del_init(&se->inf_node);
++	if (WARN_ON_ONCE(cfs_rq->inf_w_sum < se->load.weight))
++		cfs_rq->inf_w_sum = 0;
++	else
++		cfs_rq->inf_w_sum -= se->load.weight;
+ }
+ 
+ struct sched_entity *__pick_root_entity(struct cfs_rq *cfs_rq)
+@@ -1083,125 +978,55 @@ struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
+  */
+ static inline void set_protect_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+-	u64 slice = normalized_sysctl_sched_base_slice;
+-	u64 vprot = se->deadline;
+-
+-	if (sched_feat(RUN_TO_PARITY))
+-		slice = cfs_rq_min_slice(cfs_rq);
+-
+-	slice = min(slice, se->slice);
+-	if (slice != se->slice)
+-		vprot = min_vruntime(vprot, se->vruntime + calc_delta_fair(slice, se));
+-
+-	se->vprot = vprot;
++	/* Infinity: slice protection retired. */
++	(void)cfs_rq;
++	(void)se;
+ }
+ 
+ static inline void update_protect_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+-	u64 slice = cfs_rq_min_slice(cfs_rq);
+-
+-	se->vprot = min_vruntime(se->vprot, se->vruntime + calc_delta_fair(slice, se));
++	/* Infinity: slice protection retired. */
++	(void)cfs_rq;
++	(void)se;
+ }
+ 
+ static inline bool protect_slice(struct sched_entity *se)
+ {
+-	return vruntime_cmp(se->vruntime, "<", se->vprot);
++	/* Infinity: slice protection retired. */
++	(void)se;
++	return false;
+ }
+ 
+ static inline void cancel_protect_slice(struct sched_entity *se)
+ {
+-	if (protect_slice(se))
+-		se->vprot = se->vruntime;
++	/* Infinity: slice protection retired. */
++	(void)se;
+ }
+ 
+ /*
+- * Earliest Eligible Virtual Deadline First
+- *
+- * In order to provide latency guarantees for different request sizes
+- * EEVDF selects the best runnable task from two criteria:
+- *
+- *  1) the task must be eligible (must be owed service)
+- *
+- *  2) from those tasks that meet 1), we select the one
+- *     with the earliest virtual deadline.
+- *
+- * We can do this in O(log n) time due to an augmented RB-tree. The
+- * tree keeps the entries sorted on deadline, but also functions as a
+- * heap based on the vruntime by keeping:
+- *
+- *  se->min_vruntime = min(se->vruntime, se->{left,right}->min_vruntime)
+- *
+- * Which allows tree pruning through eligibility.
++ * Infinity LIFO pick (authoritative).
+  */
+ static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq, bool protect)
+ {
+-	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
+-	struct sched_entity *se = __pick_first_entity(cfs_rq);
+-	struct sched_entity *curr = cfs_rq->curr;
+-	struct sched_entity *best = NULL;
+-
+-	/*
+-	 * We can safely skip eligibility check if there is only one entity
+-	 * in this cfs_rq, saving some cycles.
+-	 */
+-	if (cfs_rq->nr_queued == 1)
+-		return curr && curr->on_rq ? curr : se;
+-
+-	/*
+-	 * Picking the ->next buddy will affect latency but not fairness.
+-	 */
+-	if (sched_feat(PICK_BUDDY) && protect &&
+-	    cfs_rq->next && entity_eligible(cfs_rq, cfs_rq->next)) {
+-		/* ->next will never be delayed */
+-		WARN_ON_ONCE(cfs_rq->next->sched_delayed);
+-		return cfs_rq->next;
+-	}
+-
+-	if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
+-		curr = NULL;
+-
+-	if (curr && protect && protect_slice(curr))
+-		return curr;
+-
+-	/* Pick the leftmost entity if it's eligible */
+-	if (se && entity_eligible(cfs_rq, se)) {
+-		best = se;
+-		goto found;
+-	}
+-
+-	/* Heap search for the EEVD entity */
+-	while (node) {
+-		struct rb_node *left = node->rb_left;
+-
+-		/*
+-		 * Eligible entities in left subtree are always better
+-		 * choices, since they have earlier deadlines.
+-		 */
+-		if (left && vruntime_eligible(cfs_rq,
+-					__node_2_se(left)->min_vruntime)) {
+-			node = left;
+-			continue;
+-		}
++	struct sched_entity *se;
+ 
+-		se = __node_2_se(node);
++	(void)protect;
+ 
+-		/*
+-		 * The left subtree either is empty or has no eligible
+-		 * entity, so check the current node since it is the one
+-		 * with earliest deadline that might be eligible.
+-		 */
+-		if (entity_eligible(cfs_rq, se)) {
+-			best = se;
+-			break;
+-		}
+-
+-		node = node->rb_right;
+-	}
+-found:
+-	if (!best || (curr && entity_before(curr, best)))
+-		best = curr;
++	if (list_empty(&cfs_rq->inf_list)) {
++		/*
++		 * Singleton/running fallback (mirrors stock nr_queued==1
++		 * fast path): curr is dequeued via set_next but still
++		 * counted in nr_queued, so empty list + curr on_rq must
++		 * return curr, not NULL (else pick_task_fair spins).
++		 */
++		se = cfs_rq->curr;
++		if (se && se->on_rq)
++			return se;
++		return NULL;
++	}
+ 
+-	return best;
++	se = list_first_entry(&cfs_rq->inf_list, struct sched_entity, inf_node);
++	return se;
+ }
+ 
+ struct sched_entity *__pick_last_entity(struct cfs_rq *cfs_rq)
+@@ -1235,29 +1050,12 @@ static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
+  * XXX: strictly: vd_i += N*r_i/w_i such that: vd_i > ve_i
+  * this is probably good enough.
+  */
+-static bool update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
++static bool __maybe_unused update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+-	if (vruntime_cmp(se->vruntime, "<", se->deadline))
+-		return false;
+-
+-	/*
+-	 * For EEVDF the virtual time slope is determined by w_i (iow.
+-	 * nice) while the request time r_i is determined by
+-	 * sysctl_sched_base_slice.
+-	 */
+-	if (!se->custom_slice)
+-		se->slice = sysctl_sched_base_slice;
+-
+-	/*
+-	 * EEVDF: vd_i = ve_i + r_i / w_i
+-	 */
+-	se->deadline = se->vruntime + calc_delta_fair(se->slice, se);
+-	avg_vruntime(cfs_rq);
+-
+-	/*
+-	 * The task has consumed its request, reschedule.
+-	 */
+-	return true;
++	/* Infinity: virtual deadline retired. */
++	(void)cfs_rq;
++	(void)se;
++	return false;
+ }
+ 
+ #include "pelt.h"
+@@ -1993,7 +1791,6 @@ static void update_curr(struct cfs_rq *cfs_rq)
+ 	struct sched_entity *curr = cfs_rq->curr;
+ 	struct rq *rq = rq_of(cfs_rq);
+ 	s64 delta_exec;
+-	bool resched;
+ 
+ 	if (unlikely(!curr))
+ 		return;
+@@ -2002,9 +1799,6 @@ static void update_curr(struct cfs_rq *cfs_rq)
+ 	if (unlikely(delta_exec <= 0))
+ 		return;
+ 
+-	curr->vruntime += calc_delta_fair(delta_exec, curr);
+-	resched = update_deadline(cfs_rq, curr);
+-
+ 	if (entity_is_task(curr)) {
+ 		/*
+ 		 * If the fair_server is active, we need to account for the
+@@ -2024,10 +1818,14 @@ static void update_curr(struct cfs_rq *cfs_rq)
+ 	if (cfs_rq->nr_queued == 1)
+ 		return;
+ 
+-	if (resched || !protect_slice(curr)) {
++	/* Infinity countdown: consume weighted quantum, expire -> reschedule. */
++	if (curr->inf_slice_rem > (u64)delta_exec)
++		curr->inf_slice_rem -= (u64)delta_exec;
++	else
++		curr->inf_slice_rem = 0;
++
++	if (!curr->inf_slice_rem)
+ 		resched_curr_lazy(rq);
+-		clear_buddies(cfs_rq, curr);
+-	}
+ }
+ 
+ static void update_curr_fair(struct rq *rq)
+@@ -4560,7 +4358,7 @@ dequeue_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 		    se_weight(se) * -se->avg.load_sum);
+ }
+ 
+-static void
++static void __maybe_unused
+ rescale_entity(struct sched_entity *se, unsigned long weight, bool rel_vprot)
+ {
+ 	unsigned long old_weight = se->load.weight;
+@@ -4667,30 +4465,26 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+ 			    unsigned long weight)
+ {
+ 	bool curr = cfs_rq->curr == se;
+-	bool rel_vprot = false;
+-	u64 avruntime = 0;
++	unsigned long old_weight = se->load.weight;
+ 
+ 	if (se->on_rq) {
+ 		/* commit outstanding execution time */
+ 		update_curr(cfs_rq);
+-		avruntime = avg_vruntime(cfs_rq);
+-		se->vlag = entity_lag(cfs_rq, se, avruntime);
+-		se->deadline -= avruntime;
+-		se->rel_deadline = 1;
+-		if (curr && protect_slice(se)) {
+-			se->vprot -= avruntime;
+-			rel_vprot = true;
++
++		/* Infinity: adjust runqueue weight sum for new weight. */
++		if (!curr) {
++			if (WARN_ON_ONCE(cfs_rq->inf_w_sum < old_weight))
++				cfs_rq->inf_w_sum = 0;
++			else
++				cfs_rq->inf_w_sum -= old_weight;
++			cfs_rq->inf_w_sum += weight;
+ 		}
+ 
+ 		cfs_rq->nr_queued--;
+-		if (!curr)
+-			__dequeue_entity(cfs_rq, se);
+-		update_load_sub(&cfs_rq->load, se->load.weight);
++		update_load_sub(&cfs_rq->load, old_weight);
+ 	}
+ 	dequeue_load_avg(cfs_rq, se);
+ 
+-	rescale_entity(se, weight, rel_vprot);
+-
+ 	update_load_set(&se->load, weight);
+ 
+ 	do {
+@@ -4700,15 +4494,7 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+ 
+ 	enqueue_load_avg(cfs_rq, se);
+ 	if (se->on_rq) {
+-		if (rel_vprot)
+-			se->vprot += avruntime;
+-		se->deadline += avruntime;
+-		se->rel_deadline = 0;
+-		se->vruntime = avruntime - se->vlag;
+-
+ 		update_load_add(&cfs_rq->load, se->load.weight);
+-		if (!curr)
+-			__enqueue_entity(cfs_rq, se);
+ 		cfs_rq->nr_queued++;
+ 	}
+ }
+@@ -5968,137 +5754,10 @@ void __setparam_fair(struct task_struct *p, const struct sched_attr *attr)
+ static void
+ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+ {
+-	u64 vslice, vruntime = avg_vruntime(cfs_rq);
+-	bool update_zero = false;
+-	s64 lag = 0;
+-
+-	if (!se->custom_slice)
+-		se->slice = sysctl_sched_base_slice;
+-	vslice = calc_delta_fair(se->slice, se);
+-
+-	/*
+-	 * Due to how V is constructed as the weighted average of entities,
+-	 * adding tasks with positive lag, or removing tasks with negative lag
+-	 * will move 'time' backwards, this can screw around with the lag of
+-	 * other tasks.
+-	 *
+-	 * EEVDF: placement strategy #1 / #2
+-	 */
+-	if (sched_feat(PLACE_LAG) && cfs_rq->nr_queued && se->vlag) {
+-		struct sched_entity *curr = cfs_rq->curr;
+-		long load, weight;
+-
+-		lag = se->vlag;
+-
+-		/*
+-		 * If we want to place a task and preserve lag, we have to
+-		 * consider the effect of the new entity on the weighted
+-		 * average and compensate for this, otherwise lag can quickly
+-		 * evaporate.
+-		 *
+-		 * Lag is defined as:
+-		 *
+-		 *   lag_i = S - s_i = w_i * (V - v_i)
+-		 *
+-		 * To avoid the 'w_i' term all over the place, we only track
+-		 * the virtual lag:
+-		 *
+-		 *   vl_i = V - v_i <=> v_i = V - vl_i
+-		 *
+-		 * And we take V to be the weighted average of all v:
+-		 *
+-		 *   V = (\Sum w_j*v_j) / W
+-		 *
+-		 * Where W is: \Sum w_j
+-		 *
+-		 * Then, the weighted average after adding an entity with lag
+-		 * vl_i is given by:
+-		 *
+-		 *   V' = (\Sum w_j*v_j + w_i*v_i) / (W + w_i)
+-		 *      = (W*V + w_i*(V - vl_i)) / (W + w_i)
+-		 *      = (W*V + w_i*V - w_i*vl_i) / (W + w_i)
+-		 *      = (V*(W + w_i) - w_i*vl_i) / (W + w_i)
+-		 *      = V - w_i*vl_i / (W + w_i)
+-		 *
+-		 * And the actual lag after adding an entity with vl_i is:
+-		 *
+-		 *   vl'_i = V' - v_i
+-		 *         = V - w_i*vl_i / (W + w_i) - (V - vl_i)
+-		 *         = vl_i - w_i*vl_i / (W + w_i)
+-		 *
+-		 * Which is strictly less than vl_i. So in order to preserve lag
+-		 * we should inflate the lag before placement such that the
+-		 * effective lag after placement comes out right.
+-		 *
+-		 * As such, invert the above relation for vl'_i to get the vl_i
+-		 * we need to use such that the lag after placement is the lag
+-		 * we computed before dequeue.
+-		 *
+-		 *   vl'_i = vl_i - w_i*vl_i / (W + w_i)
+-		 *         = ((W + w_i)*vl_i - w_i*vl_i) / (W + w_i)
+-		 *
+-		 *   (W + w_i)*vl'_i = (W + w_i)*vl_i - w_i*vl_i
+-		 *                   = W*vl_i
+-		 *
+-		 *   vl_i = (W + w_i)*vl'_i / W
+-		 */
+-		load = cfs_rq->sum_weight;
+-		if (curr && curr->on_rq)
+-			load += avg_vruntime_weight(cfs_rq, curr->load.weight);
+-
+-		weight = avg_vruntime_weight(cfs_rq, se->load.weight);
+-		lag *= load + weight;
+-		if (WARN_ON_ONCE(!load))
+-			load = 1;
+-		lag = div64_long(lag, load);
+-
+-		/*
+-		 * A heavy entity (relative to the tree) will pull the
+-		 * avg_vruntime close to its vruntime position on enqueue. But
+-		 * the zero_vruntime point is only updated at the next
+-		 * update_deadline()/place_entity()/update_entity_lag().
+-		 *
+-		 * Specifically (see the comment near avg_vruntime_weight()):
+-		 *
+-		 *   sum_w_vruntime = \Sum (v_i - v0) * w_i
+-		 *
+-		 * Note that if v0 is near a light entity, both terms will be
+-		 * small for the light entity, while in that case both terms
+-		 * are large for the heavy entity, leading to risk of
+-		 * overflow.
+-		 *
+-		 * OTOH if v0 is near the heavy entity, then the difference is
+-		 * larger for the light entity, but the factor is small, while
+-		 * for the heavy entity the difference is small but the factor
+-		 * is large. Avoiding the multiplication overflow.
+-		 */
+-		if (weight > load)
+-			update_zero = true;
+-	}
+-
+-	se->vruntime = vruntime - lag;
+-
+-	if (update_zero)
+-		update_zero_vruntime(cfs_rq, -lag);
+-
+-	if (sched_feat(PLACE_REL_DEADLINE) && se->rel_deadline) {
+-		se->deadline += se->vruntime;
+-		se->rel_deadline = 0;
+-		return;
+-	}
+-
+-	/*
+-	 * When joining the competition; the existing tasks will be,
+-	 * on average, halfway through their slice, as such start tasks
+-	 * off with half a slice to ease into the competition.
+-	 */
+-	if (sched_feat(PLACE_DEADLINE_INITIAL) && (flags & ENQUEUE_INITIAL))
+-		vslice /= 2;
+-
+-	/*
+-	 * EEVDF: vd_i = ve_i + r_i/w_i
+-	 */
+-	se->deadline = se->vruntime + vslice;
++	/* Infinity: placement retired (LIFO authoritative, S1a bypasses position). */
++	(void)cfs_rq;
++	(void)se;
++	(void)flags;
+ }
+ 
+ static void check_enqueue_throttle(struct cfs_rq *cfs_rq);
+@@ -6155,7 +5814,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+ 	check_schedstat_required();
+ 	update_stats_enqueue_fair(cfs_rq, se, flags);
+ 	if (!curr)
+-		__enqueue_entity(cfs_rq, se);
++		__enqueue_entity(cfs_rq, se, flags);
+ 	se->on_rq = 1;
+ 
+ 	if (cfs_rq->nr_queued == 1) {
+@@ -6338,14 +5997,27 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, bool first)
+ 		__dequeue_entity(cfs_rq, se);
+ 		update_load_avg(cfs_rq, se, UPDATE_TG);
+ 
+-		if (first)
+-			set_protect_slice(cfs_rq, se);
++		(void)first;
+ 	}
+ 
+ 	update_stats_curr_start(cfs_rq, se);
+ 	WARN_ON_ONCE(cfs_rq->curr);
+ 	cfs_rq->curr = se;
+ 
++	/* Infinity admission: weighted share of the base quantum. */
++	{
++		unsigned long w = se->load.weight;
++		unsigned long W = cfs_rq->inf_w_sum + w;
++		u64 q;
++
++		if (!W)
++			W = 1;
++		q = (INFINITY_Q_BASE_NS * w) / W;
++		if (!q)
++			q = 1;
++		se->inf_slice_rem = q;
++	}
++
+ 	/*
+ 	 * Track our maximum slice length, if the CPU's load is at
+ 	 * least twice that of our own weight (i.e. don't track it
+@@ -6378,7 +6050,10 @@ pick_next_entity(struct rq *rq, struct cfs_rq *cfs_rq, bool protect)
+ {
+ 	struct sched_entity *se;
+ 
++	(void)protect;
+ 	se = pick_eevdf(cfs_rq, protect);
++	if (!se)
++		return NULL;
+ 	if (se->sched_delayed) {
+ 		dequeue_entities(rq, se, DEQUEUE_SLEEP | DEQUEUE_DELAYED);
+ 		/*
+@@ -6400,8 +6075,17 @@ static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
+ 
+ 	if (prev->on_rq) {
+ 		update_stats_wait_start_fair(cfs_rq, prev);
+-		/* Put 'current' back into the tree. */
+-		__enqueue_entity(cfs_rq, prev);
++		if (!prev->inf_slice_rem) {
++			/* Expired hog: forced tail, no seq advance.
++			 * NOTE: keep in sync with the __enqueue_entity
++			 * seq-gated tail insert above.
++			 */
++			list_add_tail(&prev->inf_node, &cfs_rq->inf_list);
++			cfs_rq->inf_w_sum += prev->load.weight;
++		} else {
++			/* Put 'current' back into the Infinity LIFO. */
++			__enqueue_entity(cfs_rq, prev, 0);
++		}
+ 		/* in !on_rq case, update occurred at dequeue */
+ 		update_load_avg(cfs_rq, prev, 0);
+ 	}
+@@ -7788,7 +7469,7 @@ requeue_delayed_entity(struct sched_entity *se)
+ 			__dequeue_entity(cfs_rq, se);
+ 		place_entity(cfs_rq, se, 0);
+ 		if (se != cfs_rq->curr)
+-			__enqueue_entity(cfs_rq, se);
++			__enqueue_entity(cfs_rq, se, 0);
+ 		cfs_rq->nr_queued++;
+ 	}
+ 
+@@ -9772,9 +9453,8 @@ preempt_sync(struct rq *rq, int wake_flags,
+  */
+ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_flags)
+ {
+-	enum preempt_wakeup_action preempt_action = PREEMPT_WAKEUP_PICK;
+ 	struct task_struct *donor = rq->donor;
+-	struct sched_entity *nse, *se = &donor->se, *pse = &p->se;
++	struct sched_entity *se = &donor->se, *pse = &p->se;
+ 	struct cfs_rq *cfs_rq = task_cfs_rq(donor);
+ 	int cse_is_idle, pse_is_idle;
+ 
+@@ -9824,12 +9504,8 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
+ 	 * in the inverse case).
+ 	 */
+ 	if (cse_is_idle && !pse_is_idle) {
+-		/*
+-		 * When non-idle entity preempt an idle entity,
+-		 * don't give idle entity slice protection.
+-		 */
+-		preempt_action = PREEMPT_WAKEUP_SHORT;
+-		goto preempt;
++		resched_curr_lazy(rq);
++		return;
+ 	}
+ 
+ 	if (cse_is_idle != pse_is_idle)
+@@ -9843,74 +9519,20 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
+ 
+ 	cfs_rq = cfs_rq_of(se);
+ 	update_curr(cfs_rq);
+-	/*
+-	 * If @p has a shorter slice than current and @p is eligible, override
+-	 * current's slice protection in order to allow preemption.
+-	 */
+-	if (sched_feat(PREEMPT_SHORT) && (pse->slice < se->slice)) {
+-		preempt_action = PREEMPT_WAKEUP_SHORT;
+-		goto pick;
+-	}
+ 
+ 	/*
+ 	 * Ignore wakee preemption on WF_FORK as it is less likely that
+ 	 * there is shared data as exec often follow fork. Do not
+ 	 * preempt for tasks that are sched_delayed as it would violate
+-	 * EEVDF to forcibly queue an ineligible task.
++	 * ordering to forcibly queue a delayed task.
+ 	 */
+ 	if ((wake_flags & WF_FORK) || pse->sched_delayed)
+ 		return;
+ 
+-	/* Prefer picking wakee soon if appropriate. */
+-	if (sched_feat(NEXT_BUDDY) &&
+-	    set_preempt_buddy(cfs_rq, wake_flags, pse, se)) {
+-
+-		/*
+-		 * Decide whether to obey WF_SYNC hint for a new buddy. Old
+-		 * buddies are ignored as they may not be relevant to the
+-		 * waker and less likely to be cache hot.
+-		 */
+-		if (wake_flags & WF_SYNC)
+-			preempt_action = preempt_sync(rq, wake_flags, pse, se);
+-	}
+-
+-	switch (preempt_action) {
+-	case PREEMPT_WAKEUP_NONE:
+-		return;
+-	case PREEMPT_WAKEUP_RESCHED:
+-		goto preempt;
+-	case PREEMPT_WAKEUP_SHORT:
+-		fallthrough;
+-	case PREEMPT_WAKEUP_PICK:
+-		break;
+-	}
+-
+-pick:
+-	nse = pick_next_entity(rq, cfs_rq, preempt_action != PREEMPT_WAKEUP_SHORT);
+-	/* If @p has become the most eligible task, force preemption */
+-	if (nse == pse)
+-		goto preempt;
+-
+-	/*
+-	 * Because p is enqueued, nse being null can only mean that we
+-	 * dequeued a delayed task. If there are still entities queued in
+-	 * cfs, check if the next one will be p.
+-	 */
+-	if (!nse && cfs_rq->nr_queued)
+-		goto pick;
+-
+-	if (sched_feat(RUN_TO_PARITY))
+-		update_protect_slice(cfs_rq, se);
+-
+-	return;
+-
+-preempt:
+-	if (preempt_action == PREEMPT_WAKEUP_SHORT) {
+-		cancel_protect_slice(se);
+-		clear_buddies(cfs_rq, se);
+-	}
+-
+-	resched_curr_lazy(rq);
++	/* Infinity O(1) head test: waking entity at head preempts. */
++	if (!list_empty(&cfs_rq->inf_list) &&
++	    list_first_entry(&cfs_rq->inf_list, struct sched_entity, inf_node) == pse)
++		resched_curr_lazy(rq);
+ }
+ 
+ struct task_struct *pick_task_fair(struct rq *rq, struct rq_flags *rf)
+@@ -10039,18 +9661,10 @@ static void yield_task_fair(struct rq *rq)
+ 	 */
+ 	rq_clock_skip_update(rq);
+ 
+-	/*
+-	 * Forfeit the remaining vruntime, only if the entity is eligible. This
+-	 * condition is necessary because in core scheduling we prefer to run
+-	 * ineligible tasks rather than force idling. If this happens we may
+-	 * end up in a loop where the core scheduler picks the yielding task,
+-	 * which yields immediately again; without the condition the vruntime
+-	 * ends up quickly running away.
+-	 */
+-	if (entity_eligible(cfs_rq, se)) {
+-		se->vruntime = se->deadline;
+-		update_deadline(cfs_rq, se);
+-	}
++	/* Infinity yield: expire quantum, rotate to tail if queued. */
++	se->inf_slice_rem = 0;
++	if (se->on_rq && se != cfs_rq->curr && !list_empty(&se->inf_node))
++		list_move_tail(&se->inf_node, &cfs_rq->inf_list);
+ }
+ 
+ static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
+@@ -10057,14 +9671,20 @@ static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
+ {
+ 	struct sched_entity *se = &p->se;
++	struct cfs_rq *cfs_rq;
+ 
+ 	/* !se->on_rq also covers throttled task */
+ 	if (!se->on_rq)
+ 		return false;
+ 
++	/* Infinity: honor target via head move (exempt, no seq advance). */
++	cfs_rq = cfs_rq_of(se);
++	if (se != cfs_rq->curr && !list_empty(&se->inf_node))
++		list_move(&se->inf_node, &cfs_rq->inf_list);
++
+ 	/* Tell the scheduler that we'd really like se to run next. */
+ 	set_next_buddy(se);
+ 
+ 	yield_task_fair(rq);
+ 
+ 	return true;
+ }
+@@ -15080,6 +14700,9 @@ static void set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
+ void init_cfs_rq(struct cfs_rq *cfs_rq)
+ {
+ 	cfs_rq->tasks_timeline = RB_ROOT_CACHED;
++	INIT_LIST_HEAD(&cfs_rq->inf_list);
++	cfs_rq->inf_seq = 0;
++	cfs_rq->inf_w_sum = 0;
+ 	cfs_rq->zero_vruntime = (u64)(-(1LL << 20));
+ 	raw_spin_lock_init(&cfs_rq->removed.lock);
+ }
+@@ -15218,6 +14841,8 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
+ 	/* guarantee group entities always have weight */
+ 	update_load_set(&se->load, NICE_0_LOAD);
+ 	se->parent = parent;
++	INIT_LIST_HEAD(&se->inf_node);
++	se->inf_slice_rem = 0;
+ }
+ 
+ static DEFINE_MUTEX(shares_mutex);
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -696,6 +696,11 @@ struct cfs_rq {
+ 
+ 	struct rb_root_cached	tasks_timeline;
+ 
++	/* Infinity LIFO runqueue (authoritative ordering). */
++	struct list_head	inf_list;
++	u32			inf_seq;
++	unsigned long		inf_w_sum;
++
+ 	/*
+ 	 * 'curr' points to the currently running entity on this cfs_rq.
+ 	 * It is set to NULL otherwise (i.e when none are currently running).

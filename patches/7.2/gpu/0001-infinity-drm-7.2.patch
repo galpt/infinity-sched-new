@@ -1,0 +1,263 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Galih Tama <galpt@v.recipes>
+Date: Sun, 21 Sep 2026 00:00:00 +0000
+Subject: [PATCH] drm/sched: add Infinity bounded-LIFO policy (default)
+
+Extend the existing DRM scheduler policy switch with
+ DRM_SCHED_POLICY_INFINITY (3), a select-side bounded-LIFO discipline in
+ the KPP style: 7 head inserts + 1 tail insert per group of 8, O(1)
+ mutating ops + bounded select scan (same bound as stock), with counter
+ wrap forcing the tail. Selection scans the Infinity
+list head-to-tail and picks the first ready, creditable entity, so a
+blocked head never wedges the ring.
+
+Infinity is the default policy; pass sched_policy=1 on the kernel
+command line (or via modprobe) to revert to FIFO. The RR/FIFO/FAIR
+branches are left byte-identical, and the rb-tree stays empty on the
+Infinity path.
+
+Backport note (7.2.6): extends the in-tree policy switch in
+drivers/gpu/drm/scheduler (sched_rq.c, sched_main.c, sched_internal.h,
+sched_entity.c) and include/drm/gpu_scheduler.h. No stats, sysfs,
+Kconfig or .inc changes.
+
+Signed-off-by: Galih Tama <galpt@v.recipes>
+---
+diff --git a/drivers/gpu/drm/scheduler/sched_entity.c b/drivers/gpu/drm/scheduler/sched_entity.c
+index 672b5c5..96686c0 100644
+--- a/drivers/gpu/drm/scheduler/sched_entity.c
++++ b/drivers/gpu/drm/scheduler/sched_entity.c
+@@ -129,6 +129,7 @@ int drm_sched_entity_init(struct drm_sched_entity *entity,
+ 		return -ENOMEM;
+ 
+ 	INIT_LIST_HEAD(&entity->list);
++	INIT_LIST_HEAD(&entity->inf_node);
+ 	entity->rq = NULL;
+ 	entity->guilty = guilty;
+ 	entity->priority = priority;
+diff --git a/drivers/gpu/drm/scheduler/sched_internal.h b/drivers/gpu/drm/scheduler/sched_internal.h
+index a901801..8587d99 100644
+--- a/drivers/gpu/drm/scheduler/sched_internal.h
++++ b/drivers/gpu/drm/scheduler/sched_internal.h
+@@ -37,6 +37,7 @@ extern int drm_sched_policy;
+ #define DRM_SCHED_POLICY_RR    0
+ #define DRM_SCHED_POLICY_FIFO  1
+ #define DRM_SCHED_POLICY_FAIR  2
++#define DRM_SCHED_POLICY_INFINITY 3
+ 
+ bool drm_sched_can_queue(struct drm_gpu_scheduler *sched,
+ 			 struct drm_sched_entity *entity);
+diff --git a/drivers/gpu/drm/scheduler/sched_main.c b/drivers/gpu/drm/scheduler/sched_main.c
+index 214ed02..7b42d87 100644
+--- a/drivers/gpu/drm/scheduler/sched_main.c
++++ b/drivers/gpu/drm/scheduler/sched_main.c
+@@ -84,13 +84,19 @@
+ #define CREATE_TRACE_POINTS
+ #include "gpu_scheduler_trace.h"
+ 
+-int drm_sched_policy = DRM_SCHED_POLICY_FIFO;
++/* Infinity bounded-LIFO is the default; revert to FIFO with sched_policy=1. */
++int drm_sched_policy = DRM_SCHED_POLICY_INFINITY;
+ 
+ /**
+  * DOC: sched_policy (int)
+  * Used to override default entities scheduling policy in a run queue.
+  */
+-MODULE_PARM_DESC(sched_policy, "Specify the scheduling policy for entities on a run-queue, " __stringify(DRM_SCHED_POLICY_RR) " = Round Robin, " __stringify(DRM_SCHED_POLICY_FIFO) " = FIFO (default), " __stringify(DRM_SCHED_POLICY_FAIR) " = Fair (experimental).");
++MODULE_PARM_DESC(sched_policy,
++		 "Specify the scheduling policy for entities on a run-queue, "
++		 __stringify(DRM_SCHED_POLICY_RR) " = Round Robin, "
++		 __stringify(DRM_SCHED_POLICY_FIFO) " = FIFO, "
++		 __stringify(DRM_SCHED_POLICY_FAIR) " = Fair (experimental), "
++		 __stringify(DRM_SCHED_POLICY_INFINITY) " = Infinity bounded-LIFO (default).");
+ module_param_named(sched_policy, drm_sched_policy, int, 0444);
+ 
+ static u32 drm_sched_available_credits(struct drm_gpu_scheduler *sched)
+diff --git a/drivers/gpu/drm/scheduler/sched_rq.c b/drivers/gpu/drm/scheduler/sched_rq.c
+index 0464d32..f12b94c 100644
+--- a/drivers/gpu/drm/scheduler/sched_rq.c
++++ b/drivers/gpu/drm/scheduler/sched_rq.c
+@@ -83,6 +83,47 @@ static void drm_sched_rq_update_fifo_locked(struct drm_sched_entity *entity,
+ 	drm_sched_rq_update_prio(rq);
+ }
+ 
++static void drm_sched_rq_remove_inf_locked(struct drm_sched_entity *entity,
++					   struct drm_sched_rq *rq)
++{
++	lockdep_assert_held(&entity->lock);
++	lockdep_assert_held(&rq->lock);
++
++	if (!list_empty(&entity->inf_node))
++		list_del_init(&entity->inf_node);
++}
++
++/*
++ * Bounded-LIFO insert (KPP-style, O(1)): 7 inserts at the head (LIFO fast
++ * lane for fresh entities) + 1 insert at the tail (forced progress for
++ * older entities) per group of 8. Counter wrap forces the tail. The
++ * rb-tree is never touched on this path.
++ */
++static void drm_sched_rq_update_inf_locked(struct drm_sched_entity *entity,
++					   struct drm_sched_rq *rq,
++					   ktime_t ts)
++{
++	u32 seq;
++
++	/*
++	 * Both locks need to be grabbed, one to protect from entity->rq change
++	 * for entity from within concurrent drm_sched_entity_select_rq and the
++	 * other to update the inf list structure.
++	 */
++	lockdep_assert_held(&entity->lock);
++	lockdep_assert_held(&rq->lock);
++
++	drm_sched_rq_remove_inf_locked(entity, rq);
++
++	entity->oldest_job_waiting = ts;
++
++	seq = rq->inf_seq++;
++	if (seq == (u32)-1 || (seq & 7) == 7)
++		list_add_tail(&entity->inf_node, &rq->inf_list);
++	else
++		list_add(&entity->inf_node, &rq->inf_list);
++}
++
+ /**
+  * drm_sched_rq_init - initialize a given run queue struct
+  * @sched: scheduler instance to associate with this run queue
+@@ -95,6 +136,8 @@ void drm_sched_rq_init(struct drm_gpu_scheduler *sched,
+ {
+ 	spin_lock_init(&rq->lock);
+ 	INIT_LIST_HEAD(&rq->entities);
++	INIT_LIST_HEAD(&rq->inf_list);
++	rq->inf_seq = 0;
+ 	rq->rb_tree_root = RB_ROOT_CACHED;
+ 	rq->sched = sched;
+ 	rq->head_prio = DRM_SCHED_PRIORITY_INVALID;
+@@ -278,6 +321,12 @@ drm_sched_rq_add_entity(struct drm_sched_entity *entity, ktime_t ts)
+ 		list_add_tail(&entity->list, &rq->entities);
+ 	}
+ 
++	if (drm_sched_policy == DRM_SCHED_POLICY_INFINITY) {
++		/* Positional order; reuse caller ts, no ktime_get. */
++		drm_sched_rq_update_inf_locked(entity, rq, ts);
++		goto inf_added;
++	}
++
+ 	if (drm_sched_policy == DRM_SCHED_POLICY_FAIR) {
+ 		ts = drm_sched_rq_get_min_vruntime(rq);
+ 		ts = drm_sched_entity_restore_vruntime(entity, ts,
+@@ -288,6 +337,7 @@ drm_sched_rq_add_entity(struct drm_sched_entity *entity, ktime_t ts)
+ 
+ 	drm_sched_rq_update_fifo_locked(entity, rq, ts);
+ 
++inf_added:
+ 	spin_unlock(&rq->lock);
+ 	spin_unlock(&entity->lock);
+ 
+@@ -315,6 +365,7 @@ void drm_sched_rq_remove_entity(struct drm_sched_rq *rq,
+ 	list_del_init(&entity->list);
+ 
+ 	drm_sched_rq_remove_fifo_locked(entity, rq);
++	drm_sched_rq_remove_inf_locked(entity, rq);
+ 
+ 	spin_unlock(&rq->lock);
+ }
+@@ -354,6 +405,16 @@ void drm_sched_rq_pop_entity(struct drm_sched_entity *entity)
+ 	rq = entity->rq;
+ 	spin_lock(&rq->lock);
+ 	next_job = drm_sched_entity_queue_peek(entity);
++	if (drm_sched_policy == DRM_SCHED_POLICY_INFINITY) {
++		/* Positional order; preserve ts, no ktime_get. */
++		ktime_t ts = entity->oldest_job_waiting;
++
++		if (next_job)
++			drm_sched_rq_update_inf_locked(entity, rq, ts);
++		else
++			drm_sched_rq_remove_inf_locked(entity, rq);
++		goto inf_done;
++	}
+ 	if (next_job) {
+ 		ktime_t ts;
+ 
+@@ -375,6 +436,7 @@ void drm_sched_rq_pop_entity(struct drm_sched_entity *entity)
+ 			drm_sched_entity_save_vruntime(entity, min_vruntime);
+ 		}
+ 	}
++inf_done:
+ 	spin_unlock(&rq->lock);
+ 	spin_unlock(&entity->lock);
+ }
+@@ -397,6 +459,28 @@ drm_sched_rq_select_entity(struct drm_gpu_scheduler *sched,
+ 	struct rb_node *rb;
+ 
+ 	spin_lock(&rq->lock);
++	if (drm_sched_policy == DRM_SCHED_POLICY_INFINITY) {
++		struct drm_sched_entity *entity, *selected = NULL;
++
++		list_for_each_entry(entity, &rq->inf_list, inf_node) {
++			if (drm_sched_entity_is_ready(entity)) {
++				/* If we can't queue yet, stop at the first
++				 * ready entity just like the rb-tree path below.
++				 */
++				if (!drm_sched_can_queue(sched, entity)) {
++					spin_unlock(&rq->lock);
++					return ERR_PTR(-ENOSPC);
++				}
++
++				reinit_completion(&entity->entity_idle);
++				selected = entity;
++				break;
++			}
++		}
++		spin_unlock(&rq->lock);
++
++		return selected;
++	}
+ 	for (rb = rb_first_cached(&rq->rb_tree_root); rb; rb = rb_next(rb)) {
+ 		struct drm_sched_entity *entity;
+ 
+diff --git a/include/drm/gpu_scheduler.h b/include/drm/gpu_scheduler.h
+index 790f7ec..bcc6b4d 100644
+--- a/include/drm/gpu_scheduler.h
++++ b/include/drm/gpu_scheduler.h
+@@ -257,17 +257,29 @@ struct drm_sched_entity {
+ 	 */
+ 	struct rb_node			rb_tree_node;
+ 
++	/**
++	 * @inf_node:
++	 *
++	 * The node used to insert this entity into the Infinity bounded-LIFO
++	 * ordering. Protected by &drm_sched_rq.lock of @rq.
++	 */
++	struct list_head		inf_node;
++
+ };
+ 
+ /**
+  * struct drm_sched_rq - queue of entities to be scheduled.
+  *
+  * @sched: the scheduler to which this rq belongs to.
+- * @lock: protects @entities, @rb_tree_root, @rr_ts and @head_prio.
++ * @lock: protects @entities, @rb_tree_root, @rr_ts, @inf_list, @inf_seq
++ * and @head_prio.
+  * @rr_ts: monotonically incrementing fake timestamp for RR mode.
+  * @entities: list of the entities to be scheduled.
+  * @rb_tree_root: root of time based priority queue of entities for FIFO scheduling
+  * @head_prio: priority of the top tree element.
++ * @inf_list: list of entities for Infinity bounded-LIFO scheduling.
++ * @inf_seq: monotonically incrementing sequence deciding the Infinity
++ * bounded-LIFO insert position (7 head inserts + 1 tail insert per 8).
+  *
+  * Run queue is a set of entities scheduling command submissions for
+  * one specific ring. It implements the scheduling policy that selects
+@@ -282,6 +294,8 @@ struct drm_sched_rq {
+ 	struct list_head		entities;
+ 	struct rb_root_cached		rb_tree_root;
+ 	enum drm_sched_priority		head_prio;
++	struct list_head		inf_list;
++	u32				inf_seq;
+ };
+ 
+ /**
