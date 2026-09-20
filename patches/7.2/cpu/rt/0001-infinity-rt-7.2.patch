@@ -11,7 +11,8 @@ RR slice mechanics neutered, policy plus POSIX kept.
   task_tick fixed-quantum countdown, get_rr_interval 0.
 - sysctl /proc ABI kept (entries + storage); handler
   side-effect-free.
-- No stats, no Kconfig, no .inc; pick/yield/enqueue/
+- Per-rt_rq discipline stats with debugfs infinity_rt table,
+  no Kconfig, no .inc; pick/yield/enqueue/
   dequeue/put_prev/prio_changed/balance/push/pull kept.
 
 Signed-off-by: Galih Tama <galpt@v.recipes>
@@ -28,11 +29,17 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -851,6 +851,7 @@
+@@ -851,6 +851,13 @@
  	struct plist_head	pushable_tasks;
  
  	int			rt_queued;
 +	u32			inf_seq;
++	u64			inf_head_inserts;
++	u64			inf_tail_inserts;
++	u64			inf_forced_requeues;
++	u64			inf_recharges;
++	u64			inf_expiries;
++	u64			inf_sole_skips;
  
  #ifdef CONFIG_RT_GROUP_SCHED
  	int			rt_throttled;
@@ -50,9 +57,11 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  
 --- a/kernel/sched/rt.c
 +++ b/kernel/sched/rt.c
-@@ -7,6 +7,13 @@
+@@ -6,7 +6,15 @@
+ 
  #include "sched.h"
  #include "pelt.h"
++#include <linux/debugfs.h>
  
 +/*
 + * Infinity RT: fixed 1ms quantum for RR neutering. RR timeslice state is
@@ -64,40 +73,50 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  int sched_rr_timeslice = RR_TIMESLICE;
  /* More than 4 hours if BW_SHIFT equals 20. */
  static const u64 max_rt_runtime = MAX_BW;
-@@ -84,6 +91,7 @@
+@@ -84,6 +92,13 @@
  	plist_head_init(&rt_rq->pushable_tasks);
  	/* We start is dequeued state, because no RT tasks are queued */
  	rt_rq->rt_queued = 0;
 +	rt_rq->inf_seq = 0;
++	rt_rq->inf_head_inserts = 0;
++	rt_rq->inf_tail_inserts = 0;
++	rt_rq->inf_forced_requeues = 0;
++	rt_rq->inf_recharges = 0;
++	rt_rq->inf_expiries = 0;
++	rt_rq->inf_sole_skips = 0;
  
  #ifdef CONFIG_RT_GROUP_SCHED
  	rt_rq->rt_time = 0;
-@@ -1349,10 +1357,22 @@
+@@ -1349,10 +1364,26 @@
  
  	if (move_entity(flags)) {
  		WARN_ON_ONCE(rt_se->on_list);
 -		if (flags & ENQUEUE_HEAD)
 +		if (flags & ENQUEUE_HEAD) {
 +			/* Explicit head request is exempt, no seq advance. */
- 			list_add(&rt_se->run_list, queue);
--		else
++			list_add(&rt_se->run_list, queue);
++			rt_rq->inf_head_inserts++;
 +		} else if (rt_rq->inf_seq == (u32)-1) {
 +			/* Wrap: force tail and wrap to zero. */
 +			list_add_tail(&rt_se->run_list, queue);
 +			rt_rq->inf_seq = 0;
++			rt_rq->inf_tail_inserts++;
 +		} else if ((rt_rq->inf_seq & 7) != 7) {
 +			/* Bounded LIFO: 7x head ... */
-+			list_add(&rt_se->run_list, queue);
+ 			list_add(&rt_se->run_list, queue);
+-		else
 +			rt_rq->inf_seq++;
++			rt_rq->inf_head_inserts++;
 +		} else {
 +			/* ... then 1x tail. */
  			list_add_tail(&rt_se->run_list, queue);
 +			rt_rq->inf_seq++;
++			rt_rq->inf_tail_inserts++;
 +		}
  
  		__set_bit(rt_se_prio(rt_se), array->bitmap);
  		rt_se->on_list = 1;
-@@ -1475,10 +1495,9 @@
+@@ -1475,10 +1506,10 @@
  		struct rt_prio_array *array = &rt_rq->active;
  		struct list_head *queue = array->queue + rt_se_prio(rt_se);
  
@@ -108,10 +127,11 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +		/* Infinity: RR neutered, always tail. head arg ignored, no seq advance. */
 +		(void)head;
 +		list_move_tail(&rt_se->run_list, queue);
++		rt_rq->inf_forced_requeues++;
  	}
  }
  
-@@ -2540,8 +2559,6 @@
+@@ -2540,8 +2571,6 @@
   */
  static void task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
  {
@@ -120,7 +140,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	update_curr_rt(rq);
  	update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
  
-@@ -2554,33 +2571,43 @@
+@@ -2554,33 +2583,47 @@
  	if (p->policy != SCHED_RR)
  		return;
  
@@ -140,9 +160,10 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -			requeue_task_rt(rq, p, 0);
 -			resched_curr(rq);
 -			return;
--		}
-+	if (p->rt.inf_slice_rem == 0)
++	if (p->rt.inf_slice_rem == 0) {
 +		p->rt.inf_slice_rem = INFINITY_RT_Q_BASE_NS;
++		rq->rt.inf_recharges++;
++	}
 +
 +	if (p->rt.inf_slice_rem > (u64)(NSEC_PER_SEC / HZ)) {
 +		p->rt.inf_slice_rem -= (u64)(NSEC_PER_SEC / HZ);
@@ -156,6 +177,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +		 * Skip forced-tail requeue+resched when sole element on
 +		 * the queue (mirrors stock prev != next check).
 +		 */
++		rq->rt.inf_expiries++;
 +		p->rt.inf_slice_rem += INFINITY_RT_Q_BASE_NS;
 +		for_each_sched_rt_entity(rt_se) {
 +			if (rt_se->run_list.prev != rt_se->run_list.next) {
@@ -163,7 +185,8 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +				resched_curr(rq);
 +				return;
 +			}
-+		}
+ 		}
++		rq->rt.inf_sole_skips++;
  	}
  }
  
@@ -182,7 +205,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  #ifdef CONFIG_SCHED_CORE
-@@ -2917,17 +2944,9 @@
+@@ -2917,17 +2960,9 @@
  	mutex_lock(&mutex);
  	ret = proc_dointvec(table, write, buffer, lenp, ppos);
  	/*
@@ -202,3 +225,235 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	mutex_unlock(&mutex);
  
  	return ret;
+@@ -2944,3 +2979,211 @@
+ 		print_rt_rq(m, cpu, rt_rq);
+ 	rcu_read_unlock();
+ }
++
++/*
++ * Infinity RT stats: per-rt_rq counters summed at read.
++ * Renderer is a static copy for revert-independence.
++ * Counters are plain u64, updated under rq lock, summed at read.
++ */
++#define INF_RT_LABEL_CAP 32
++#define INF_RT_NOTE_CAP 48
++#define INF_RT_VAL_W 8
++
++/*
++ * Integer only pretty for counters: plain below 100000,
++ * else scaled K/M/B/T/P/E with two digits of precision.
++ * No floating point: the kernel has no FPU in sched context.
++ */
++static void inf_rt_pretty(u64 v, char *buf, size_t sz)
++{
++	const char *suf = "";
++	u64 div = 1;
++	u64 whole;
++	unsigned int tenth;
++
++	if (v < 100000ULL) {
++		snprintf(buf, sz, "%llu", (unsigned long long)v);
++		return;
++	}
++	if (v >= 1000000000000000000ULL) {
++		suf = "E";
++		div = 1000000000000000000ULL;
++	} else if (v >= 1000000000000000ULL) {
++		suf = "P";
++		div = 1000000000000000ULL;
++	} else if (v >= 1000000000000ULL) {
++		suf = "T";
++		div = 1000000000000ULL;
++	} else if (v >= 1000000000ULL) {
++		suf = "B";
++		div = 1000000000ULL;
++	} else if (v >= 1000000ULL) {
++		suf = "M";
++		div = 1000000ULL;
++	} else {
++		suf = "K";
++		div = 1000ULL;
++	}
++	whole = v / div;
++	if (whole >= 10) {
++		snprintf(buf, sz, "%llu%s", (unsigned long long)whole, suf);
++		return;
++	}
++	tenth = (unsigned int)((v % div) * 10ULL / div);
++	snprintf(buf, sz, "%llu.%u%s", (unsigned long long)whole, tenth, suf);
++}
++
++static void inf_rt_copy_trunc(char *dst, const char *src, size_t cap)
++{
++	size_t len = strlen(src);
++
++	if (len <= cap) {
++		strscpy(dst, src, cap + 1);
++	} else {
++		memcpy(dst, src, cap - 1);
++		dst[cap - 1] = '~';
++		dst[cap] = '\0';
++	}
++}
++
++static void inf_rt_emit_sep(struct seq_file *m, unsigned int lw,
++			    unsigned int vw, unsigned int nw)
++{
++	unsigned int i;
++
++	seq_putc(m, '+');
++	for (i = 0; i < lw + 2; i++)
++		seq_putc(m, '-');
++	seq_putc(m, '+');
++	for (i = 0; i < vw + 2; i++)
++		seq_putc(m, '-');
++	seq_putc(m, '+');
++	for (i = 0; i < nw + 2; i++)
++		seq_putc(m, '-');
++	seq_putc(m, '+');
++	seq_putc(m, '\n');
++}
++
++struct inf_rt_stat_row {
++	const char *label;
++	u64 val;
++	const char *note;
++};
++
++static int inf_rt_show(struct seq_file *m, void *v)
++{
++	struct inf_rt_stat_row rows[6];
++	u64 head;
++	u64 tail;
++	u64 forced;
++	u64 rech;
++	u64 exp;
++	u64 sole;
++	unsigned int lw;
++	unsigned int vw;
++	unsigned int nw;
++	unsigned int i;
++	char valbuf[INF_RT_VAL_W + 1];
++	char labbuf[INF_RT_LABEL_CAP + 1];
++	char notebuf[INF_RT_NOTE_CAP + 1];
++	bool first;
++	int cpu;
++	rt_rq_iter_t iter;
++	struct rt_rq *rt_rq;
++
++	head = 0;
++	tail = 0;
++	forced = 0;
++	rech = 0;
++	exp = 0;
++	sole = 0;
++
++	/*
++	 * Sum across CPUs and groups. for_each_rt_rq walks groups
++	 * when enabled, otherwise root only. Mirrors print_rt_stats.
++	 */
++	for_each_possible_cpu(cpu) {
++		rcu_read_lock();
++		for_each_rt_rq(rt_rq, iter, cpu_rq(cpu)) {
++			head += READ_ONCE(rt_rq->inf_head_inserts);
++			tail += READ_ONCE(rt_rq->inf_tail_inserts);
++			forced += READ_ONCE(rt_rq->inf_forced_requeues);
++			rech += READ_ONCE(rt_rq->inf_recharges);
++			exp += READ_ONCE(rt_rq->inf_expiries);
++			sole += READ_ONCE(rt_rq->inf_sole_skips);
++		}
++		rcu_read_unlock();
++	}
++
++	rows[0].label = "head_inserts";
++	rows[0].val = head;
++	rows[0].note = "strict head";
++	rows[1].label = "tail_inserts";
++	rows[1].val = tail;
++	rows[1].note = "incl. wrap";
++	rows[2].label = "forced_requeue";
++	rows[2].val = forced;
++	rows[2].note = "starvation guard";
++	rows[3].label = "recharges";
++	rows[3].val = rech;
++	rows[3].note = "tick arming";
++	rows[4].label = "expiries";
++	rows[4].val = exp;
++	rows[4].note = "slice expiry";
++	rows[5].label = "sole_skips";
++	rows[5].val = sole;
++	rows[5].note = "sole fast-skip";
++
++	/* One pass to size label and note columns. */
++	lw = strlen("counter");
++	nw = strlen("note");
++	for (i = 0; i < ARRAY_SIZE(rows); i++) {
++		unsigned int ll = strlen(rows[i].label);
++		unsigned int nl = strlen(rows[i].note);
++
++		if (ll > lw)
++			lw = ll;
++		if (nl > nw)
++			nw = nl;
++	}
++
++	if (lw > INF_RT_LABEL_CAP)
++		lw = INF_RT_LABEL_CAP;
++	if (nw > INF_RT_NOTE_CAP)
++		nw = INF_RT_NOTE_CAP;
++	vw = INF_RT_VAL_W;
++
++	inf_rt_emit_sep(m, lw, vw, nw);
++	seq_printf(m, "| %-*s | %*s | %-*s |\n", lw, "counter", vw,
++		   "value", nw, "note");
++	inf_rt_emit_sep(m, lw, vw, nw);
++
++	first = true;
++	for (i = 0; i < ARRAY_SIZE(rows); i++) {
++		char tmp[128];
++		int rlen;
++		int blen;
++
++		inf_rt_pretty(rows[i].val, valbuf, sizeof(valbuf));
++		inf_rt_copy_trunc(labbuf, rows[i].label,
++				  INF_RT_LABEL_CAP);
++		inf_rt_copy_trunc(notebuf, rows[i].note,
++				  INF_RT_NOTE_CAP);
++		valbuf[vw] = '\0';
++		seq_printf(m, "| %-*s | %*s | %-*s |\n", lw, labbuf, vw,
++			   valbuf, nw, notebuf);
++		if (first) {
++			first = false;
++			rlen = snprintf(tmp, sizeof(tmp),
++					"| %-*s | %*s | %-*s |",
++					lw, labbuf, vw, valbuf, nw,
++					notebuf);
++			blen = (int)(lw + vw + nw + 10);
++			WARN_ON(rlen != blen);
++		}
++	}
++
++	inf_rt_emit_sep(m, lw, vw, nw);
++
++	return 0;
++}
++
++static int inf_rt_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, inf_rt_show, NULL);
++}
++
++static const struct file_operations inf_rt_fops = {
++	.open = inf_rt_open,
++	.read = seq_read,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
++static int __init inf_rt_debug_init(void)
++{
++	debugfs_create_file("infinity_rt", 0444, NULL, NULL,
++			    &inf_rt_fops);
++	return 0;
++}
++late_initcall(inf_rt_debug_init);

@@ -4,7 +4,8 @@ This project is an attempt to modify Fair, RT, and the DRM GPU schedulers to giv
 It is using a completely different approach compared to the [old version of the Infinity project](https://github.com/galpt/infinity-scheduler).
 
 > [!NOTE]
-> This project is not for beginners. You are expected to already know how to work with patch files. You are welcome to be an early tester and your feedback would be greatly appreciated.
+> 1. This project is not for beginners. You are expected to already know how to work with patch files. You are welcome to be an early tester and your feedback would be greatly appreciated.
+> 2. The patches are intended to be applied together for Infinity to work correctly as a complete scheduler. Applying only part of the series (for example the CPU patches without the GPU patch, or vice versa) may result in unintended side effects.
 
 ## How to build a patched kernel
 
@@ -67,7 +68,7 @@ Until those runs land, treat every performance claim here as a design goal rathe
 - *"Known behavior (signed): `sched_rr_get_interval` returns 0 for RR (RR quantum neutered; 0 = infinity per the timespec convention). `sched_rr_timeslice` sysctl//proc entries and `time_slice` storage are retained ABI-only and side-effect-free."*
 - DRM revert: `sched_policy=1` boot param restores FIFO; Infinity is default (POLICY_INFINITY=3).
 
-There are no stats and every constant is frozen. The 1 ms quantum base, the 7 plus 1 bound and the policy default are compiled in with no runtime tunables.
+Live discipline stats are in debugfs: `/sys/kernel/debug/infinity_fair` (fair, this track), `/sys/kernel/debug/infinity_rt` (rt track) and `/sys/kernel/debug/infinity_drm` (drm track). Every constant stays frozen — the 1 ms quantum base, the 7 plus 1 bound and the policy default are compiled in with no runtime tunables. vruntime and tree fields in `/proc/sched_debug` are frozen under Infinity, so consult debugfs for live state.
 
 ## Credits
 
