@@ -6,6 +6,7 @@ It uses a completely different approach compared to the [old version of the Infi
 > [!NOTE]
 > 1. This project is not for beginners. You are expected to already know how to work with patch files. You are welcome to be an early tester and your feedback would be greatly appreciated.
 > 2. The patches are intended to be applied together for Infinity to work correctly as a complete scheduler. Applying only part of the series (for example the CPU patches without the GPU patch, or vice versa) may result in unintended side effects.
+> 3. Currently only the CachyOS 7.2 version is supported. Support for other kernel versions or other distros will follow after the 7.2 version is considered stable.
 
 ## How to build a patched kernel
 
