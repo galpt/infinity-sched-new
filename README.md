@@ -1,7 +1,7 @@
 # Infinity Scheduler
 
 This project is an attempt to modify Fair, RT, and the DRM GPU schedulers to give consistent performance and latency under load, optimized for modern-day desktop interactivity.
-It is using a completely different approach compared to the [old version of the Infinity project](https://github.com/galpt/infinity-scheduler).
+It uses a completely different approach compared to the [old version of the Infinity project](https://github.com/galpt/infinity-scheduler).
 
 > [!NOTE]
 > 1. This project is not for beginners. You are expected to already know how to work with patch files. You are welcome to be an early tester and your feedback would be greatly appreciated.
@@ -33,7 +33,7 @@ perl scripts/checkpatch.pl --strict --patch patches/7.2/cpu/rt/0001-infinity-rt-
 perl scripts/checkpatch.pl --strict --patch patches/7.2/gpu/0001-infinity-drm-7.2.patch
 ```
 
-Fallback is revert of one patch or of the whole series. Each patch reverses cleanly on its own, and the drm policy reverts at runtime with sched_policy=1. To drop the series from a tree, reverse in gpu, rt, fair order.
+Fallback is a revert of one patch or of the whole series. Each patch reverses cleanly on its own, and the drm policy reverts at runtime with sched_policy=1. To drop the series from a tree, reverse in gpu, rt, fair order.
 
 ```sh
 cd /path/to/linux-7.2.6
