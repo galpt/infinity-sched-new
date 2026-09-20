@@ -45,11 +45,11 @@ patch -p1 -R < /path/to/infinity-sched-new/patches/7.2/cpu/fair/0001-infinity-fa
 
 Apply checks pass with zero fuzz in both series order and reverse order. Each of the three patches reports zero errors and zero warnings under checkpatch in strict mode.
 
-Independent revert of each patch restores the stock file. QA, fidelity and performance gates hold, including the H1 livelock fix.
+Independent revert of each patch restores the stock file. Independent review holds, including a fix for a livelock found in an earlier revision.
 
 Concretely, the fair patch was checked against stock 7.2.6 EEVDF sources with `git apply --check`, then stacked with rt and gpu in series order and again in reverse order.
 
-The drm select scan was reviewed for the blocked head case so a stalled entity cannot wedge the ring. The H1 review closed the livelock path found in an earlier revision.
+The drm select scan was reviewed for the blocked head case so a stalled entity cannot wedge the ring. Review also closed the livelock path found in an earlier revision.
 
 All verification so far is at source level. Kernel build plus boot plus schbench and cyclictest plus GPU kunit remain open.
 
@@ -71,15 +71,17 @@ There are no stats and every constant is frozen. The 1 ms quantum base, the 7 pl
 
 ## Credits
 
+v5 is a clean rewrite built on bounded-LIFO with a weighted 1ms quantum, so most entries below honor work on the previous implementation that made this rewrite possible.
+
 - **[EEVDF](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/kernel/sched/fair.c)** — Earliest Eligible Virtual Deadline First scheduling algorithm by Ion Stoica and Hussein Abdel-Wahab (1995), implemented in the Linux kernel by Peter Zijlstra and the kernel community. EEVDF serves as the foundation that the Infinity scheduler modifies.
-- **[scx_flow 3.1.0](https://github.com/sched-ext/scx/tree/main/rust/scx_layered/scx_flow)** — BPF sched-ext fair-share scheduler by the sched-ext community. The budget model and interactive floor logic are adapted from this implementation.
-- **[BORE](https://github.com/firelzrd/bore-scheduler)** — Burst-Oriented Response Enhancer scheduler by Masahito S ([firelzrd](https://github.com/firelzrd)). BORE's approach to CPU-bound task suppression through burst scoring provided a reference point for Infinity's accelerating consumption design.
-- **[BMQ / PDS / LF-BMQ](https://gitlab.com/alfredchen/projectc)** — BitMap Queue schedulers by Alfred Chen (Project C). Research into BMQ's complete scheduler replacement approach validated the decision to keep Infinity within EEVDF rather than replacing it entirely.
-- **[Tvrtko Ursulin — Fair(er) DRM GPU scheduler](https://blogs.igalia.com/tursulin/fair-er-drm-gpu-scheduler/)** — Igalia blog post demonstrating a CFS-inspired fair scheduler for the DRM GPU scheduler. The approach to unified virtual time scheduling and priority de-strictification directly informs Infinity's GPU extension.
-- **[LINUX DO](https://linux.do/)** — Chinese Linux community where the Infinity scheduler is discussed and promoted. Feedback from the community helps shape the project's development direction.
-- **[CachyOS community](https://cachyos.org/)** — Testers and early adopters who provided real-world feedback during development, helping validate the scheduler's behavior under diverse workloads.
-- **[u3z05en](https://github.com/u3z05en)** — Jonathan, for helping with the code review, addressing several subtle issues that made Infinity more correct and robust.
-- **[lostf1sh](https://github.com/lostf1sh)** — Bug reports and code review, helping identify issues and improve the scheduler's correctness.
-- **[RiverOnVenus](https://github.com/RiverOnVenus)** — Code review, helping identify issues and improve the scheduler's correctness.
-- **[dim-geo](https://github.com/dim-geo)** — CachyOS packaging: contributed the adapted 7.1 patch series under `patches/cachyos/7.1/`.
-- **[sxlmnwb](https://github.com/sxlmnwb)** — Salman Wahib, for moving the `infinity_stats` rows to a heap allocation, fixing the stack frame warning and the error-path cleanup.
+- Exploration of bounded-LIFO and fair share ideas informed by [scx_flow](https://github.com/galpt/scx_flow_new/tree/main/scheds/experimental/scx_flow) and [KPP](https://github.com/galpt/kpp-iosched), studied as background for the previous implementation and carried forward only as design thinking.
+- [BORE](https://github.com/firelzrd/bore-scheduler) by Masahito S, whose burst scoring research informed exploration in the previous implementation.
+- [BMQ / PDS / LF-BMQ](https://gitlab.com/alfredchen/projectc) by Alfred Chen, whose scheduler research informed exploration in the previous implementation.
+- [Tvrtko Ursulin, Fair(er) DRM GPU scheduler](https://blogs.igalia.com/tursulin/fair-er-drm-gpu-scheduler/), whose fair GPU scheduling research informed exploration in the previous implementation.
+- [LINUX DO](https://linux.do/), for discussion and support during development of the previous implementation.
+- [CachyOS community](https://cachyos.org/), for testing and feedback during development of the previous implementation.
+- [u3z05en](https://github.com/u3z05en), Jonathan, for code review that made the previous implementation more correct and robust.
+- [lostf1sh](https://github.com/lostf1sh), for bug reports and code review on the previous implementation.
+- [RiverOnVenus](https://github.com/RiverOnVenus), for code review on the previous implementation.
+- [dim-geo](https://github.com/dim-geo), for CachyOS packaging of the 7.1 series in the previous repository line.
+- [sxlmnwb](https://github.com/sxlmnwb), Salman Wahib, for the `infinity_stats` heap allocation fix in the previous implementation, a component this rewrite omits by design.
