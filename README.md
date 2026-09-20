@@ -1,6 +1,6 @@
 # Infinity Scheduler
 
-This project is an attempt to modify Fair, RT, and the DRM GPU schedulers to give consistent performance and latency that work better for desktop use.
+This project is an attempt to modify Fair, RT, and the DRM GPU schedulers to give consistent performance and latency under load, optimized for modern-day desktop interactivity.
 It is using a completely different approach compared to the [old version of the Infinity project](https://github.com/galpt/infinity-scheduler).
 
 > [!NOTE]
@@ -44,10 +44,6 @@ patch -p1 -R < /path/to/infinity-sched-new/patches/7.2/cpu/fair/0001-infinity-fa
 
 ## How it is checked
 
-Apply checks pass with zero fuzz in both series order and reverse order. Each of the three patches reports zero errors and zero warnings under checkpatch in strict mode.
-
-Independent revert of each patch restores the stock file. Independent review holds, including a fix for a livelock found in an earlier revision.
-
 On a booted kernel, confirm Infinity is running by reading the debugfs boxes. Counters at zero on an idle machine mean the discipline is live but quiet. Rising head and tail counts under load mean it is scheduling.
 
 ```sh
@@ -55,10 +51,6 @@ cat /sys/kernel/debug/infinity_fair
 cat /sys/kernel/debug/infinity_rt
 cat /sys/kernel/debug/infinity_drm
 ```
-
-Every constant stays frozen. The 1 ms quantum base, the 7 plus 1 bound and the policy default are compiled in with no runtime tunables. vruntime and tree fields in `/proc/sched_debug` are frozen under Infinity, so consult debugfs for live state.
-
-Build and boot runs are still open, so treat performance claims as design goals until measured.
 
 ## Credits
 
