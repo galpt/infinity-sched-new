@@ -1,9 +1,9 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Infinity Scheduler <infinity@example.com>
-Date: Sun, 21 Sep 2026 00:00:00 +0000
-Subject: [PATCH] infinity rt S2: RR-neuter + bounded-LIFO
+From: Galih Tama <galpt@v.recipes>
+Date: Sun, 20 Sep 2026 21:29:43 +0000
+Subject: [PATCH] infinity rt: timeslice neuter with bounded-LIFO
 
-S2 slice: RR slice mechanics neutered, policy + POSIX kept.
+RR slice mechanics neutered, policy plus POSIX kept.
 - struct rt_rq.inf_seq (bounded-LIFO 7+1) plus
   struct sched_rt_entity.inf_slice_rem (fixed 1ms quantum);
   time_slice kept as unused storage.
@@ -14,7 +14,7 @@ S2 slice: RR slice mechanics neutered, policy + POSIX kept.
 - No stats, no Kconfig, no .inc; pick/yield/enqueue/
   dequeue/put_prev/prio_changed/balance/push/pull kept.
 
-Signed-off-by: Infinity Scheduler <infinity@example.com>
+Signed-off-by: Galih Tama <galpt@v.recipes>
 ---
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h

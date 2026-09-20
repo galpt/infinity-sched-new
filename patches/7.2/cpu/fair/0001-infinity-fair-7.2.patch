@@ -1,13 +1,13 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Infinity Scheduler <infinity@example.com>
-Date: Sun, 21 Sep 2026 00:00:00 +0000
-Subject: [PATCH] infinity fair S1a+S1b: LIFO + weighted quantum/expiry
+From: Galih Tama <galpt@v.recipes>
+Date: Sun, 20 Sep 2026 21:29:43 +0000
+Subject: [PATCH] infinity fair: bounded-LIFO ordering with weighted quantum and expiry
 
-S1a slice: structures + LIFO order + tree retirement only.
-S1b slice: weighted quantum + expiry + preempt + yield + reweight-delta
-+ dead-code cleanup (vruntime retirement, no stats/sysctl/Kconfig/trace).
+Structures plus LIFO order with tree retirement, weighted quantum plus
+expiry plus preempt plus yield plus reweight-delta, and dead-code
+cleanup (vruntime retirement, no stats/sysctl/Kconfig/trace).
 
-Signed-off-by: Infinity Scheduler <infinity@example.com>
+Signed-off-by: Galih Tama <galpt@v.recipes>
 ---
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h

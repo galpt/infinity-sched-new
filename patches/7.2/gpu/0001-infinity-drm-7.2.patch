@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Galih Tama <galpt@v.recipes>
-Date: Sun, 21 Sep 2026 00:00:00 +0000
+Date: Sun, 20 Sep 2026 21:29:43 +0000
 Subject: [PATCH] drm/sched: add Infinity bounded-LIFO policy (default)
 
 Extend the existing DRM scheduler policy switch with
