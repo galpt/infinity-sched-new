@@ -278,7 +278,7 @@ index 0464d32..b7deca5 100644
  	for (rb = rb_first_cached(&rq->rb_tree_root); rb; rb = rb_next(rb)) {
  		struct drm_sched_entity *entity;
  
-@@ -418,3 +523,238 @@ drm_sched_rq_select_entity(struct drm_gpu_scheduler *sched,
+@@ -418,3 +523,261 @@ drm_sched_rq_select_entity(struct drm_gpu_scheduler *sched,
  
  	return rb ? rb_entry(rb, struct drm_sched_entity, rb_tree_node) : NULL;
  }
