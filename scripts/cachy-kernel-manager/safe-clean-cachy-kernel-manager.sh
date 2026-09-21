@@ -152,6 +152,36 @@ PKG_FILES=()    # *.pkg.tar.zst built packages
 TARBALLS=()     # cachyos-*.tar.gz + NVIDIA-*.tar.xz
 BOOT_CANDIDATES=()   # orphaned initramfs-*/vmlinuz-* (top level only)
 BOOT_UNVERIFIABLE=() # matched prefix but ownership could not be checked
+LIMINE_ACTIVE=()     # basenames referenced by active (non-history) boot entries
+
+collect_limine_refs() {
+    # Bootloader entries can reference kernels that pacman no longer owns
+    # (e.g. manually installed kernels). Such files are bootable options
+    # and must never be treated as orphans, so record every basename
+    # appearing in an ACTIVE limine entry. History entries under
+    # limine_history/ are snapshots, not boot options: excluded.
+    # Result: basenames only (hash suffixes stripped), one per line.
+    LIMINE_ACTIVE=()
+    [ "$BOOT_AVAILABLE" -eq 1 ] || return 0
+    local conf="$BOOT_DIR/limine.conf"
+    local text=""
+    if [ -r "$conf" ]; then
+        text="$(cat -- "$conf" 2>/dev/null || true)"
+    elif [ "$BOOT_NEEDS_SUDO" -eq 1 ] && command -v sudo >/dev/null 2>&1; then
+        text="$(sudo -n cat -- "$conf" 2>/dev/null || true)"
+    else
+        return 0
+    fi
+    [ -n "$text" ] || return 0
+    while IFS= read -r base; do
+        [ -n "$base" ] || continue
+        LIMINE_ACTIVE+=("$base")
+    done < <(printf '%s\n' "$text" \
+        | grep -E '^[[:space:]]*(kernel_path|module_path):' \
+        | grep -v 'limine_history' \
+        | sed -e 's/^[^:]*:[[:space:]]*//' -e 's#^boot():/##' -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+        | sed -e 's#.*/##')
+}
 
 collect_build_dirs() {
     # Top-level profiles only: $CACHE/<profile>/{src,pkg}. Never follows
@@ -217,6 +247,12 @@ is_boot_protected() {
     case "$base" in
         *"$RUNNING_KERNEL"*) return 0 ;;  # running kernel, never touch
     esac
+    local ref
+    for ref in ${LIMINE_ACTIVE[@]+"${LIMINE_ACTIVE[@]}"}; do
+        if [ "$base" = "$ref" ]; then
+            return 0  # referenced by an active boot entry, never touch
+        fi
+    done
     return 1
 }
 
@@ -455,6 +491,7 @@ log ""
 collect_build_dirs
 collect_pkg_files
 collect_tarballs
+collect_limine_refs
 collect_boot_candidates
 
 BUILD_BYTES=0
