@@ -421,11 +421,14 @@ remove_boot_file() {
         rm -f -- "$f"
     else
         # Privileged delete (interactive sudo: user passed --yes --prune-boot).
-        if sudo test -L -- "$f" 2>/dev/null; then
+        # NOTE: no "--" here: /usr/bin/test has no end-of-options marker
+        # and errors out on it. Paths are absolute under BOOT_DIR, so a
+        # leading dash is impossible.
+        if sudo test -L "$f" 2>/dev/null; then
             echo "Skipping symlink (never follow): $f" >&2
             return 0
         fi
-        if ! sudo test -f -- "$f" 2>/dev/null; then
+        if ! sudo test -f "$f" 2>/dev/null; then
             echo "Skipping (not a regular file): $f" >&2
             return 0
         fi
