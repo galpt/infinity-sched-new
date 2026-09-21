@@ -241,7 +241,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +
 +/*
 + * Integer only pretty for counters: plain below 100000,
-+ * else scaled K/M/B/T/P/E with two digits of precision.
++ * else scaled K/M/B/T/P/E with one decimal.
 + * No floating point: the kernel has no FPU in sched context.
 + */
 +static void inf_rt_pretty(u64 v, char *buf, size_t sz)

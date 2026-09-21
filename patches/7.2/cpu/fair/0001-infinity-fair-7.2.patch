@@ -922,7 +922,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  static DEFINE_MUTEX(shares_mutex);
-@@ -15532,6 +15210,299 @@ void print_cfs_stats(struct seq_file *m, int cpu)
+@@ -15532,6 +15210,300 @@ void print_cfs_stats(struct seq_file *m, int cpu)
  	rcu_read_unlock();
  }
  
@@ -994,6 +994,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +
 +/*
 + * Integer only ms with one decimal, e.g. 8.0ms.
++ * Design range is quantum <=1ms (INFINITY_Q_BASE_NS); fits vbuf[16].
 + */
 +static void inf_ms(char *buf, size_t len, u64 ns)
 +{
