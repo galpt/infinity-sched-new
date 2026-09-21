@@ -319,24 +319,47 @@ index 0464d32..b7deca5 100644
 +	}
 +}
 +
-+/* Format a counter, pretty output stays within INF_VAL_W chars. */
++/*
++ * Integer only pretty for counters: plain below 100000,
++ * else scaled K/M/B/T/P/E with one decimal; stays within INF_VAL_W chars.
++ */
 +static void inf_pretty(u64 v, char *buf, size_t sz)
 +{
-+	if (v < 100000000ULL) {
++	const char *suf = "";
++	u64 div = 1;
++	u64 whole;
++	unsigned int tenth;
++
++	if (v < 100000) {
 +		snprintf(buf, sz, "%llu", (unsigned long long)v);
-+	} else if (v < 1000000000000ULL) {
-+		snprintf(buf, sz, "%lluM",
-+			 (unsigned long long)(v / 1000000ULL));
-+	} else if (v < 1000000000000000ULL) {
-+		snprintf(buf, sz, "%lluG",
-+			 (unsigned long long)(v / 1000000000ULL));
-+	} else if (v < 1000000000000000000ULL) {
-+		snprintf(buf, sz, "%lluT",
-+			 (unsigned long long)(v / 1000000000000ULL));
-+	} else {
-+		snprintf(buf, sz, "%lluE",
-+			 (unsigned long long)(v / 1000000000000000000ULL));
++		return;
 +	}
++	if (v >= 1000000000000000000ULL) {
++		suf = "E";
++		div = 1000000000000000000ULL;
++	} else if (v >= 1000000000000000ULL) {
++		suf = "P";
++		div = 1000000000000000ULL;
++	} else if (v >= 1000000000000ULL) {
++		suf = "T";
++		div = 1000000000000ULL;
++	} else if (v >= 1000000000ULL) {
++		suf = "B";
++		div = 1000000000ULL;
++	} else if (v >= 1000000ULL) {
++		suf = "M";
++		div = 1000000ULL;
++	} else {
++		suf = "K";
++		div = 1000ULL;
++	}
++	whole = v / div;
++	if (whole >= 10) {
++		snprintf(buf, sz, "%llu%s", (unsigned long long)whole, suf);
++		return;
++	}
++	tenth = (unsigned int)((v % div) * 10 / div);
++	snprintf(buf, sz, "%llu.%u%s", (unsigned long long)whole, tenth, suf);
 +}
 +
 +static void emit_sep(struct seq_file *m, int lw, int vw, int nw)
