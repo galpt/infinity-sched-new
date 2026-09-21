@@ -70,9 +70,7 @@ The reported `p50` and `p99` values are wakeup latencies. They come from the Wak
 schbench -m 2 -r 30
 ```
 
-For end user feel, `p50` shows typical latency, while `p99` shows near worst latency seen by one in one hundred wakeups, so it guards against stutter.
-
-Request latencies are on a millisecond scale and are not reported here. The split of wakeup and request latencies follows the same idea as in `sched-ext/scx#3825`, but the values are not directly comparable because the machine and the load shape and the kernel base are different, and each result is a single sample.
+For end user feel, `p50` shows typical latency, while `p99` shows near worst latency seen by one in one hundred wakeups, so it guards against stutter. Request latencies are on a millisecond scale and are not reported here.
 
 ![Figure 2. Infinity v5 versus scx_flow on latency](benchmarks/charts/fig2_latency.png)
 
