@@ -1,0 +1,2 @@
+Kernel,SCX Scheduler,SCX Version,stress-ng cpu-cache-mem,perf sched msg fork thread,perf memcpy,calculating prime numbers,namd 92K atoms,argon2 hashing,ffmpeg compilation,xz compression,kernel defconfig,blender render,x265 encoding,y-cruncher pi 1b,schbench p99 latency (us),schbench p50 latency (us),schbench avg rps,cyclictest max latency (us)
+7.3.0-rc2-3-cachyos-rc,flow,4.2.46,14.15,10.571,9.92,12.524,50.89,6.91,64.56,54.48,130.69,98.38,23.17,39.88,71.0,9.0,1965.53,1340.0

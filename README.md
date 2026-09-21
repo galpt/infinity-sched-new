@@ -10,9 +10,10 @@ It uses a completely different approach compared to the [old version of the Infi
 
 ## How to build a patched kernel
 
-Pick the 7.2 series and apply it in series order, fair first, then rt, then gpu. Check that each patch applies cleanly with zero fuzz, then build as usual.
+Fetch this repo without its history to save time, then pick the 7.2 series and apply it in series order, fair first, then rt, then gpu. Check that each patch applies cleanly with zero fuzz, then build as usual.
 
 ```sh
+git clone --depth 1 https://github.com/galpt/infinity-sched-new.git
 cd /path/to/linux-7.2.6
 patch -p1 -N -F 0 --dry-run < /path/to/infinity-sched-new/patches/7.2/cpu/fair/0001-infinity-fair-7.2.patch
 patch -p1 -N -F 0 --dry-run < /path/to/infinity-sched-new/patches/7.2/cpu/rt/0001-infinity-rt-7.2.patch
@@ -52,6 +53,18 @@ sudo cat /sys/kernel/debug/infinity_fair
 sudo cat /sys/kernel/debug/infinity_rt
 sudo cat /sys/kernel/debug/infinity_drm
 ```
+
+## Benchmarks
+
+Numbers come from the CachyOS benchmarker on one machine under load, Infinity v5 on 7.2.6 against scx_flow 4.2.46 on 7.3.0-rc2. The harness output plus the raw CSV files plus the plot script live under benchmarks, so anyone can rerun or redraw them.
+
+Figure 1 covers throughput and build times. Infinity leads 8 of 12 tests by 1 to 4 percent, with the clearest gaps on ffmpeg, xz, kernel defconfig, blender, and x265. scx_flow leads stress-ng, y-cruncher, and argon2 by similar small margins. The one large gap runs the other way, with perf sched msg fork thread at 15.48s against 10.57s, and that test hammers exactly the fork plus thread plus messaging paths where a young rewrite has the most room to improve. Base versions differ across the two runs, so gaps under a few percent are noise, not verdicts.
+
+![Figure 1. Infinity v5 versus scx_flow on throughput](benchmarks/charts/fig1_throughput.png)
+
+Figure 2 covers wake and timer latency, which is what the bounded-LIFO design targets. schbench p99 lands at 9us against 71us, p50 at 4us against 9us, and schbench throughput at 2037rps against 1966rps. cyclictest worst sample ties at 1352us against 1340us, and a single worst sample carries no verdict either way. Each run is a single sample per kernel, so treat the small gaps as direction, not proof.
+
+![Figure 2. Infinity v5 versus scx_flow on latency](benchmarks/charts/fig2_latency.png)
 
 ## Credits
 
