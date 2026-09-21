@@ -225,7 +225,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	mutex_unlock(&mutex);
  
  	return ret;
-@@ -2944,3 +2979,231 @@
+@@ -2944,3 +2979,251 @@
  		print_rt_rq(m, cpu, rt_rq);
  	rcu_read_unlock();
  }
@@ -423,6 +423,11 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +		seq_printf(m, "| %-*s | %*s | %-*s |\n", lw, labbuf, vw,
 +			   valbuf, nw, notebuf);
 +		if (first) {
++			char bdr[128];
++			int j1 = (int)lw + 3, j2 = (int)lw + (int)vw + 6;
++			int j3 = (int)lw + (int)vw + (int)nw + 9;
++			int k;
++
 +			first = false;
 +			rlen = snprintf(tmp, sizeof(tmp),
 +					"| %-*s | %*s | %-*s |",
@@ -430,6 +435,21 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +					notebuf);
 +			blen = (int)(lw + vw + nw + 10);
 +			WARN_ON(rlen != blen);
++			/*
++			 * Junction check: every '+' in the separator must
++			 * sit exactly under a '|' in data rows. Border math
++			 * below mirrors inf_rt_emit_sep on purpose, so any
++			 * drift between the two trips the WARN instead of
++			 * printing a skewed box.
++			 */
++			memset(bdr, '-', sizeof(bdr));
++			bdr[0] = '+';
++			bdr[j1] = '+';
++			bdr[j2] = '+';
++			bdr[j3] = '+';
++			bdr[j3 + 1] = '\0';
++			for (k = 0; tmp[k]; k++)
++				WARN_ON((bdr[k] == '+') != (tmp[k] == '|'));
 +		}
 +	}
 +

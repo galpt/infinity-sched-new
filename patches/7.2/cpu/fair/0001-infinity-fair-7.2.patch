@@ -922,7 +922,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  static DEFINE_MUTEX(shares_mutex);
-@@ -15532,6 +15210,277 @@ void print_cfs_stats(struct seq_file *m, int cpu)
+@@ -15532,6 +15210,299 @@ void print_cfs_stats(struct seq_file *m, int cpu)
  	rcu_read_unlock();
  }
  
@@ -1134,11 +1134,33 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	}
 +
 +	if (!inf_fair_checked) {
++		char bdr[INF_LABEL_CAP + INF_NOTE_CAP + INF_VW + 16];
++		char row[INF_LABEL_CAP + INF_NOTE_CAP + INF_VW + 16];
++		int j1 = lw + 3, j2 = lw + INF_VW + 6;
++		int j3 = lw + INF_VW + nw + 9;
++		int k;
++
 +		blen = strlen("+") + (size_t)lw + 2 + 1 +
 +			(size_t)INF_VW + 2 + 1 + (size_t)nw + 2 + 1;
 +		rlen = strlen("|") + 1 + (size_t)lw + 1 + 1 + 1 +
 +			(size_t)INF_VW + 1 + 1 + 1 + (size_t)nw + 1 + 1;
 +		WARN_ON_ONCE(blen != rlen);
++		/*
++		 * Junction check: every '+' in the separator must sit
++		 * exactly under a '|' in data rows. Border math below
++		 * mirrors emit_sep on purpose, so any drift between the
++		 * two trips the WARN instead of printing a skewed box.
++		 */
++		memset(bdr, '-', sizeof(bdr));
++		bdr[0] = '+';
++		bdr[j1] = '+';
++		bdr[j2] = '+';
++		bdr[j3] = '+';
++		bdr[j3 + 1] = '\0';
++		snprintf(row, sizeof(row), "| %-*s | %*s | %-*s |",
++			 lw, "stat", INF_VW, "value", nw, "note");
++		for (k = 0; row[k]; k++)
++			WARN_ON_ONCE((bdr[k] == '+') != (row[k] == '|'));
 +		inf_fair_checked = true;
 +	}
 +

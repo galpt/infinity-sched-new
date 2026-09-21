@@ -278,7 +278,7 @@ index 0464d32..b7deca5 100644
  	for (rb = rb_first_cached(&rq->rb_tree_root); rb; rb = rb_next(rb)) {
  		struct drm_sched_entity *entity;
  
-@@ -418,3 +523,218 @@ drm_sched_rq_select_entity(struct drm_gpu_scheduler *sched,
+@@ -418,3 +523,238 @@ drm_sched_rq_select_entity(struct drm_gpu_scheduler *sched,
  
  	return rb ? rb_entry(rb, struct drm_sched_entity, rb_tree_node) : NULL;
  }
@@ -434,7 +434,27 @@ index 0464d32..b7deca5 100644
 +			 lw, lbuf[j], vw, vbuf[j], nw, nbuf[j]);
 +		rlen = (int)strlen(row);
 +		if (first) {
++			char bdr[LABEL_CAP + NOTE_CAP + INF_VAL_W + 16];
++			int j1 = lw + 3, j2 = lw + vw + 6;
++			int j3 = lw + vw + nw + 9;
++			int m;
++
 +			WARN_ON(slen != rlen);
++			/*
++			 * Junction check: every '+' in the separator must
++			 * sit exactly under a '|' in data rows. Border math
++			 * below mirrors emit_sep on purpose, so any drift
++			 * between the two trips the WARN instead of
++			 * printing a skewed box.
++			 */
++			memset(bdr, '-', sizeof(bdr));
++			bdr[0] = '+';
++			bdr[j1] = '+';
++			bdr[j2] = '+';
++			bdr[j3] = '+';
++			bdr[j3 + 1] = '\0';
++			for (m = 0; row[m]; m++)
++				WARN_ON((bdr[m] == '+') != (row[m] == '|'));
 +			first = false;
 +		}
 +		seq_printf(m, "%s\n", row);
