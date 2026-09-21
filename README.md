@@ -68,4 +68,4 @@ v5 is a clean rewrite built on bounded-LIFO with a weighted 1ms quantum, so most
 - [lostf1sh](https://github.com/lostf1sh), for bug reports and code review on the previous implementation.
 - [RiverOnVenus](https://github.com/RiverOnVenus), for code review on the previous implementation.
 - [dim-geo](https://github.com/dim-geo), for CachyOS packaging of the 7.1 series in the previous repository line.
-- [sxlmnwb](https://github.com/sxlmnwb), Salman Wahib, for the `infinity_stats` heap allocation fix in the previous implementation, a component this rewrite omits by design.
+- [sxlmnwb](https://github.com/sxlmnwb), Salman Wahib, for the `infinity_stats` heap allocation fix in the previous implementation. This rewrite carries its own debugfs stats instead.
