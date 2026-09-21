@@ -64,6 +64,16 @@ Figure 1 covers throughput and build times. Infinity leads 8 of 12 tests by 1 to
 
 Figure 2 covers wake and timer latency, which is what the bounded-LIFO design targets. schbench p99 lands at 9us against 71us, p50 at 4us against 9us, and schbench throughput at 2037rps against 1966rps. cyclictest worst sample ties at 1352us against 1340us, and a single worst sample carries no verdict either way. Each run is a single sample per kernel, so treat the small gaps as direction, not proof.
 
+The reported `p50` and `p99` values are wakeup latencies. They come from the Wakeup block produced by the command below. The harness keeps the first match, so the Request block is not used.
+
+```sh
+schbench -m 2 -r 30
+```
+
+For end user feel, `p50` shows typical latency, while `p99` shows near worst latency seen by one in one hundred wakeups, so it guards against stutter.
+
+Request latencies are on a millisecond scale and are not reported here. The split of wakeup and request latencies follows the same idea as in `sched-ext/scx#3825`, but the values are not directly comparable because the machine and the load shape and the kernel base are different, and each result is a single sample.
+
 ![Figure 2. Infinity v5 versus scx_flow on latency](benchmarks/charts/fig2_latency.png)
 
 ## Credits
