@@ -48,9 +48,9 @@ patch -p1 -R < /path/to/infinity-sched-new/patches/7.2/cpu/fair/0001-infinity-fa
 On a booted kernel, confirm Infinity is running by reading the debugfs boxes. Counters at zero on an idle machine mean the discipline is live but quiet. Rising head and tail counts under load mean it is scheduling.
 
 ```sh
-cat /sys/kernel/debug/infinity_fair
-cat /sys/kernel/debug/infinity_rt
-cat /sys/kernel/debug/infinity_drm
+sudo cat /sys/kernel/debug/infinity_fair
+sudo cat /sys/kernel/debug/infinity_rt
+sudo cat /sys/kernel/debug/infinity_drm
 ```
 
 ## Credits
