@@ -10,38 +10,38 @@ It uses a completely different approach compared to the [old version of the Infi
 
 ## How to build a patched kernel
 
-Fetch this repo without its history to save time, then pick the 7.2 series and apply it in series order, fair first, then rt, then gpu. Check that each patch applies cleanly with zero fuzz, then build as usual.
+Fetch this repo without its history to save time, then pick the cachyos tuned-eevdf 7.2.6-1 series and apply it in series order, fair first, then rt, then gpu. Check that each patch applies cleanly with zero fuzz, then build as usual.
 
 ```sh
 git clone --depth 1 https://github.com/galpt/infinity-sched-new.git
 cd /path/to/linux-7.2.6
-patch -p1 -N -F 0 --dry-run < /path/to/infinity-sched-new/patches/7.2/cpu/fair/0001-infinity-fair-7.2.patch
-patch -p1 -N -F 0 --dry-run < /path/to/infinity-sched-new/patches/7.2/cpu/rt/0001-infinity-rt-7.2.patch
-patch -p1 -N -F 0 --dry-run < /path/to/infinity-sched-new/patches/7.2/gpu/0001-infinity-drm-7.2.patch
-patch -p1 -N -F 0 < /path/to/infinity-sched-new/patches/7.2/cpu/fair/0001-infinity-fair-7.2.patch
-patch -p1 -N -F 0 < /path/to/infinity-sched-new/patches/7.2/cpu/rt/0001-infinity-rt-7.2.patch
-patch -p1 -N -F 0 < /path/to/infinity-sched-new/patches/7.2/gpu/0001-infinity-drm-7.2.patch
+patch -p1 -N -F 0 --dry-run < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/cpu/fair/0001-infinity-fair-7.2.patch
+patch -p1 -N -F 0 --dry-run < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/cpu/rt/0001-infinity-rt-7.2.patch
+patch -p1 -N -F 0 --dry-run < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/gpu/0001-infinity-drm-7.2.patch
+patch -p1 -N -F 0 < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/cpu/fair/0001-infinity-fair-7.2.patch
+patch -p1 -N -F 0 < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/cpu/rt/0001-infinity-rt-7.2.patch
+patch -p1 -N -F 0 < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/gpu/0001-infinity-drm-7.2.patch
 make -j$(nproc)
 ```
 
 Check apply state with git and lint each patch with checkpatch in strict mode.
 
 ```sh
-git apply --check patches/7.2/cpu/fair/0001-infinity-fair-7.2.patch
-git apply --check patches/7.2/cpu/rt/0001-infinity-rt-7.2.patch
-git apply --check patches/7.2/gpu/0001-infinity-drm-7.2.patch
-perl scripts/checkpatch.pl --strict --patch patches/7.2/cpu/fair/0001-infinity-fair-7.2.patch
-perl scripts/checkpatch.pl --strict --patch patches/7.2/cpu/rt/0001-infinity-rt-7.2.patch
-perl scripts/checkpatch.pl --strict --patch patches/7.2/gpu/0001-infinity-drm-7.2.patch
+git apply --check patches/cachyos/tuned-eevdf/7.2.6-1/cpu/fair/0001-infinity-fair-7.2.patch
+git apply --check patches/cachyos/tuned-eevdf/7.2.6-1/cpu/rt/0001-infinity-rt-7.2.patch
+git apply --check patches/cachyos/tuned-eevdf/7.2.6-1/gpu/0001-infinity-drm-7.2.patch
+perl scripts/checkpatch.pl --strict --patch patches/cachyos/tuned-eevdf/7.2.6-1/cpu/fair/0001-infinity-fair-7.2.patch
+perl scripts/checkpatch.pl --strict --patch patches/cachyos/tuned-eevdf/7.2.6-1/cpu/rt/0001-infinity-rt-7.2.patch
+perl scripts/checkpatch.pl --strict --patch patches/cachyos/tuned-eevdf/7.2.6-1/gpu/0001-infinity-drm-7.2.patch
 ```
 
 Fallback is a revert of one patch or of the whole series. Each patch reverses cleanly on its own, and the drm policy reverts at runtime with sched_policy=1. To drop the series from a tree, reverse in gpu, rt, fair order.
 
 ```sh
 cd /path/to/linux-7.2.6
-patch -p1 -R < /path/to/infinity-sched-new/patches/7.2/gpu/0001-infinity-drm-7.2.patch
-patch -p1 -R < /path/to/infinity-sched-new/patches/7.2/cpu/rt/0001-infinity-rt-7.2.patch
-patch -p1 -R < /path/to/infinity-sched-new/patches/7.2/cpu/fair/0001-infinity-fair-7.2.patch
+patch -p1 -R < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/gpu/0001-infinity-drm-7.2.patch
+patch -p1 -R < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/cpu/rt/0001-infinity-rt-7.2.patch
+patch -p1 -R < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/cpu/fair/0001-infinity-fair-7.2.patch
 ```
 
 ## How it is checked
