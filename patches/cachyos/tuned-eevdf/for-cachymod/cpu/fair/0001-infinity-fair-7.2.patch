@@ -10,8 +10,8 @@ list with weighted quantum, expiry, preemption, yield handling, and
 reweight delta compensation. Vruntime summation and averaging helpers
 are retired; the tree path is kept only for fallback compatibility.
 
-Weights use hierarchical load (h_load) throughout the accounting and
-quantum paths, with reweight handled through the reweight_eevdf path,
+Weights use load (se->load.weight) throughout the accounting and
+quantum paths, with reweight handled through the reweight_entity path,
 so group shares are honored end to end.
 
 The base quantum is frozen with no sysctl, Kconfig, proc, or debugfs
@@ -50,17 +50,17 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	WARN_ON_ONCE(p->se.sched_delayed);
 --- a/kernel/sched/fair.c
 +++ b/kernel/sched/fair.c
-@@ -50,6 +50,7 @@
+@@ -49,6 +49,7 @@
  #include <linux/ratelimit.h>
  #include <linux/task_work.h>
  #include <linux/rbtree_augmented.h>
 +#include <linux/debugfs.h>
- #include <linux/prefetch.h>
  
  #include <asm/switch_to.h>
-@@ -86,6 +87,12 @@ unsigned int sysctl_sched_base_slice			= 700000ULL;
- static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
- #endif /* CONFIG_CACHY */
+ 
+@@ -83,6 +84,12 @@ unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
+ unsigned int sysctl_sched_base_slice			= 800000000ULL / HZ * (HZ > 500? 2: 1);
+ static unsigned int normalized_sysctl_sched_base_slice	= 800000000ULL / HZ * (HZ > 500? 2: 1);
  
 +/*
 + * Infinity-queue base quantum, nanoseconds. Frozen default, not tunable:
@@ -68,17 +68,17 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 + */
 +#define INFINITY_Q_BASE_NS 1000000ULL
 +
- #ifdef CONFIG_CACHY
  __read_mostly unsigned int sysctl_sched_migration_cost	= 400000UL;
- #else
-@@ -656,79 +663,6 @@ static inline unsigned long avg_vruntime_weight(struct cfs_rq *cfs_rq, unsigned
+ 
+ static int __init setup_sched_thermal_decay_shift(char *str)
+@@ -686,79 +693,6 @@ static inline unsigned long avg_vruntime_weight(struct cfs_rq *cfs_rq, unsigned
  	return w;
  }
  
 -static inline void
 -__sum_w_vruntime_add(struct cfs_rq *cfs_rq, struct sched_entity *se)
 -{
--	unsigned long weight = avg_vruntime_weight(cfs_rq, se->h_load.weight);
+-	unsigned long weight = avg_vruntime_weight(cfs_rq, se->load.weight);
 -	s64 w_vruntime, key = entity_key(cfs_rq, se);
 -
 -	w_vruntime = key * weight;
@@ -95,7 +95,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -	s64 key, tmp;
 -
 -again:
--	weight = avg_vruntime_weight(cfs_rq, se->h_load.weight);
+-	weight = avg_vruntime_weight(cfs_rq, se->load.weight);
 -	key = entity_key(cfs_rq, se);
 -
 -	if (check_mul_overflow(key, weight, &key))
@@ -141,7 +141,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -static void
 -sum_w_vruntime_sub(struct cfs_rq *cfs_rq, struct sched_entity *se)
 -{
--	unsigned long weight = avg_vruntime_weight(cfs_rq, se->h_load.weight);
+-	unsigned long weight = avg_vruntime_weight(cfs_rq, se->load.weight);
 -	s64 key = entity_key(cfs_rq, se);
 -
 -	cfs_rq->sum_w_vruntime -= key * weight;
@@ -151,7 +151,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  static inline
  void update_zero_vruntime(struct cfs_rq *cfs_rq, s64 delta)
  {
-@@ -753,38 +687,8 @@ void update_zero_vruntime(struct cfs_rq *cfs_rq, s64 delta)
+@@ -783,38 +717,8 @@ void update_zero_vruntime(struct cfs_rq *cfs_rq, s64 delta)
   */
  u64 avg_vruntime(struct cfs_rq *cfs_rq)
  {
@@ -166,7 +166,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -		s64 runtime = cfs_rq->sum_w_vruntime;
 -
 -		if (curr) {
--			unsigned long w = avg_vruntime_weight(cfs_rq, curr->h_load.weight);
+-			unsigned long w = avg_vruntime_weight(cfs_rq, curr->load.weight);
 -
 -			runtime += entity_key(cfs_rq, curr) * w;
 -			weight += w;
@@ -192,12 +192,14 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  static inline u64 cfs_rq_max_slice(struct cfs_rq *cfs_rq);
-@@ -832,18 +736,9 @@ static s64 entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se, u64 avrunt
+@@ -862,20 +766,9 @@ static s64 entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se, u64 avrunt
  static __always_inline
  bool update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
  {
 -	u64 avruntime = avg_vruntime(cfs_rq);
 -	s64 vlag = entity_lag(cfs_rq, se, avruntime);
+-
+-	WARN_ON_ONCE(!se->on_rq);
 -
 -	if (se->sched_delayed) {
 -		/* previous vlag < 0 otherwise se would not be delayed */
@@ -214,31 +216,27 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  /*
-@@ -1017,18 +912,30 @@ RB_DECLARE_CALLBACKS_MULTI(static, min_vruntime_cb, struct sched_entity,
+@@ -1049,22 +942,40 @@ RB_DECLARE_CALLBACKS_MULTI(static, min_vruntime_cb, struct sched_entity,
  /*
   * Enqueue an entity into the rb-tree:
   */
 -static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 +static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
  {
- 	WARN_ON_ONCE(&rq_of(cfs_rq)->cfs != cfs_rq);
- 	WARN_ON_ONCE(!entity_is_task(se));
-+	WARN_ON_ONCE(!list_empty(&se->inf_node));
- 
 -	sum_w_vruntime_add(cfs_rq, se);
 -	se->min_vruntime = se->vruntime;
 -	se->min_slice = se->slice;
--	se->max_slice = se->slice;
--
--	rb_add_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
--				__entity_less, &min_vruntime_cb);
-+	se->max_slice = se->slice;
++	WARN_ON_ONCE(!list_empty(&se->inf_node));
++
+ 	se->max_slice = se->slice;
 +	if ((flags & ENQUEUE_HEAD) || cfs_rq->curr == se) {
 +		list_add(&se->inf_node, &cfs_rq->inf_list);
 +		cfs_rq->inf_exempt_inserts++;
 +	} else {
 +		u32 seq = cfs_rq->inf_seq++;
-+
+ 
+-	rb_add_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
+-				__entity_less, &min_vruntime_cb);
 +		if (seq == (u32)-1 || (seq & 7) == 7) {
 +			/* Keep in sync with put_prev_entity() hog rotation. */
 +			/* No shared helper by design: hot-path shape freeze. */
@@ -249,20 +247,17 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +			cfs_rq->inf_head_inserts++;
 +		}
 +	}
-+	cfs_rq->inf_w_sum += se->h_load.weight;
++	cfs_rq->inf_w_sum += se->load.weight;
  }
  
  static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
-@@ -1026,9 +934,14 @@ static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
- 	WARN_ON_ONCE(&rq_of(cfs_rq)->cfs != cfs_rq);
- 	WARN_ON_ONCE(!entity_is_task(se));
- 
+ {
 -	rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
 -				  &min_vruntime_cb);
 -	sum_w_vruntime_sub(cfs_rq, se);
 +	list_del_init(&se->inf_node);
-+	if (cfs_rq->inf_w_sum >= se->h_load.weight) {
-+		cfs_rq->inf_w_sum -= se->h_load.weight;
++	if (cfs_rq->inf_w_sum >= se->load.weight) {
++		cfs_rq->inf_w_sum -= se->load.weight;
 +	} else {
 +		WARN_ON_ONCE(1);
 +		cfs_rq->inf_w_sum = 0;
@@ -271,7 +266,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  struct sched_entity *__pick_root_entity(struct cfs_rq *cfs_rq)
-@@ -1061,35 +974,25 @@ struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
+@@ -1097,35 +1008,25 @@ struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
   */
  static inline void set_protect_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
  {
@@ -314,13 +309,13 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  /*
-@@ -1113,73 +1016,20 @@ static inline void cancel_protect_slice(struct sched_entity *se)
+@@ -1149,73 +1050,20 @@ static inline void cancel_protect_slice(struct sched_entity *se)
   */
  static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq, bool protect)
  {
 -	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
 -	struct sched_entity *se = __pick_first_entity(cfs_rq);
-+	/* Root pick needs the task cursor: h_curr is the group entity. */
++	/* Empty list: return running entity (task or group) if on_rq. */
  	struct sched_entity *curr = cfs_rq->curr;
 -	struct sched_entity *best = NULL;
 -
@@ -328,7 +323,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -	 * We can safely skip eligibility check if there is only one entity
 -	 * in this cfs_rq, saving some cycles.
 -	 */
--	if (cfs_rq->h_nr_queued == 1)
+-	if (cfs_rq->nr_queued == 1)
 -		return curr && curr->on_rq ? curr : se;
 -
 -	/*
@@ -352,11 +347,12 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -		best = se;
 -		goto found;
 -	}
--
+ 
 -	/* Heap search for the EEVD entity */
 -	while (node) {
 -		struct rb_node *left = node->rb_left;
--
++	(void)protect;
+ 
 -		/*
 -		 * Eligible entities in left subtree are always better
 -		 * choices, since they have earlier deadlines.
@@ -365,11 +361,14 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -					__node_2_se(left)->min_vruntime)) {
 -			node = left;
 -			continue;
--		}
- 
++	if (list_empty(&cfs_rq->inf_list)) {
++		if (curr && curr->on_rq) {
++			cfs_rq->inf_curr_fallback_picks++;
++			return curr;
+ 		}
+-
 -		se = __node_2_se(node);
-+	(void)protect;
- 
+-
 -		/*
 -		 * The left subtree either is empty or has no eligible
 -		 * entity, so check the current node since it is the one
@@ -378,11 +377,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -		if (entity_eligible(cfs_rq, se)) {
 -			best = se;
 -			break;
-+	if (list_empty(&cfs_rq->inf_list)) {
-+		if (curr && curr->on_rq) {
-+			cfs_rq->inf_curr_fallback_picks++;
-+			return curr;
- 		}
+-		}
 -
 -		node = node->rb_right;
 +		return NULL;
@@ -396,7 +391,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  struct sched_entity *__pick_last_entity(struct cfs_rq *cfs_rq)
-@@ -1215,27 +1065,9 @@ static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
+@@ -1251,27 +1099,9 @@ static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
   */
  static bool update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
  {
@@ -427,26 +422,33 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  #include "pelt.h"
-@@ -1969,7 +1801,6 @@ static void update_curr(struct cfs_rq *cfs_rq)
- 	struct sched_entity *curr = cfs_rq->h_curr;
+@@ -2002,24 +1832,20 @@ static void update_curr(struct cfs_rq *cfs_rq)
+ 	 * not necessarily be the actual task running
+ 	 * (rq->curr.se). This is easy to confuse!
+ 	 */
+ 	struct sched_entity *curr = cfs_rq->curr;
  	struct rq *rq = rq_of(cfs_rq);
  	s64 delta_exec;
 -	bool resched;
  
  	if (unlikely(!curr))
  		return;
-@@ -1985,9 +1816,6 @@ static void update_curr(struct cfs_rq *cfs_rq)
  
- 	cfs_rq = &rq->cfs;
+ 	delta_exec = update_se(rq, curr);
+ 	if (unlikely(delta_exec <= 0))
+ 		return;
  
 -	curr->vruntime += calc_delta_fair(delta_exec, curr);
 -	resched = update_deadline(cfs_rq, curr);
 -
- 	/*
- 	 * If the fair_server is active, we need to account for the
- 	 * fair_server time whether or not the task is running on
-@@ -2003,7 +1831,12 @@ static void update_curr(struct cfs_rq *cfs_rq)
- 	if (cfs_rq->h_nr_queued == 1)
+ 	if (entity_is_task(curr)) {
+ 		/*
+ 		 * If the fair_server is active, we need to account for the
+ 		 * fair_server time whether or not the task is running on
+ 		 * behalf of fair_server or not:
+ 		 *  - If the task is running on behalf of fair_server, we need
+@@ -2036,7 +1862,12 @@ static void update_curr(struct cfs_rq *cfs_rq)
+ 	if (cfs_rq->nr_queued == 1)
  		return;
  
 -	if (resched || !protect_slice(curr)) {
@@ -459,17 +461,16 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  		resched_curr_lazy(rq);
  		clear_buddies(cfs_rq, curr);
  	}
-@@ -4651,40 +4484,22 @@ static void reweight_eevdf(struct cfs_rq *cfs_rq, struct sched_entity *se,
- 			   unsigned long weight, bool on_rq)
+@@ -4688,21 +4519,9 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+ 			    unsigned long weight)
  {
  	bool curr = cfs_rq->curr == se;
 -	bool rel_vprot = false;
 -	u64 avruntime = 0;
  
- 	if (se->h_load.weight == weight)
- 		return;
- 
- 	if (on_rq) {
+ 	if (se->on_rq) {
+-		/* commit outstanding execution time */
+ 		update_curr(cfs_rq);
 -		avruntime = avg_vruntime(cfs_rq);
 -		se->vlag = entity_lag(cfs_rq, se, avruntime);
 -		se->deadline -= avruntime;
@@ -479,44 +480,46 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -			rel_vprot = true;
 -		}
 -
-+		update_curr(cfs_rq);
- 		cfs_rq->h_nr_queued--;
+ 		cfs_rq->nr_queued--;
  		if (!curr)
  			__dequeue_entity(cfs_rq, se);
+@@ -4710,8 +4529,6 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
  	}
+ 	dequeue_load_avg(cfs_rq, se);
  
 -	rescale_entity(se, weight, rel_vprot);
 -
- 	update_load_set(&se->h_load, weight);
+ 	update_load_set(&se->load, weight);
  
- 	if (on_rq) {
+ 	do {
+@@ -4721,15 +4538,9 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+ 
+ 	enqueue_load_avg(cfs_rq, se);
+ 	if (se->on_rq) {
 -		if (rel_vprot)
 -			se->vprot += avruntime;
 -		se->deadline += avruntime;
 -		se->rel_deadline = 0;
 -		se->vruntime = avruntime - se->vlag;
 -
+ 		update_load_add(&cfs_rq->load, se->load.weight);
  		if (!curr)
 -			__enqueue_entity(cfs_rq, se);
 +			__enqueue_entity(cfs_rq, se, 0);
- 		cfs_rq->h_nr_queued++;
+ 		cfs_rq->nr_queued++;
  	}
  }
-@@ -6114,141 +5929,9 @@ void __setparam_fair(struct task_struct *p, const struct sched_attr *attr)
+@@ -5989,147 +5800,9 @@ void __setparam_fair(struct task_struct *p, const struct sched_attr *attr)
  static void
  place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
  {
 -	u64 vslice, vruntime = avg_vruntime(cfs_rq);
--	unsigned int nr_queued = cfs_rq->h_nr_queued;
 -	bool update_zero = false;
 -	s64 lag = 0;
 -
 -	if (!se->custom_slice)
 -		se->slice = sysctl_sched_base_slice;
 -	vslice = calc_delta_fair(se->slice, se);
--
--	if (flags & ENQUEUE_QUEUED)
--		nr_queued -= 1;
 -
 -	/*
 -	 * Due to how V is constructed as the weighted average of entities,
@@ -526,7 +529,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -	 *
 -	 * EEVDF: placement strategy #1 / #2
 -	 */
--	if (sched_feat(PLACE_LAG) && nr_queued && se->vlag) {
+-	if (sched_feat(PLACE_LAG) && cfs_rq->nr_queued && se->vlag) {
 -		struct sched_entity *curr = cfs_rq->curr;
 -		long load, weight;
 -
@@ -586,9 +589,9 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -		 */
 -		load = cfs_rq->sum_weight;
 -		if (curr && curr->on_rq)
--			load += avg_vruntime_weight(cfs_rq, curr->h_load.weight);
+-			load += avg_vruntime_weight(cfs_rq, curr->load.weight);
 -
--		weight = avg_vruntime_weight(cfs_rq, se->h_load.weight);
+-		weight = avg_vruntime_weight(cfs_rq, se->load.weight);
 -		lag *= load + weight;
 -		if (WARN_ON_ONCE(!load))
 -			load = 1;
@@ -641,27 +644,46 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -	 * EEVDF: vd_i = ve_i + r_i/w_i
 -	 */
 -	se->deadline = se->vruntime + vslice;
+-
+-#ifdef CONFIG_CACHY
+-	if (static_branch_likely(&sched_credit_key) &&
+-			entity_is_task(se) && (flags & ENQUEUE_WAKEUP)) {
+-		u64 credit = bore_credit_ns(task_of(se));
+-
+-		if (credit && se->deadline > credit)
+-			se->deadline -= credit;
+-	}
+-#endif /* CONFIG_CACHY */
 +	(void)cfs_rq;
 +	(void)se;
 +	(void)flags;
  }
  
  static void check_enqueue_throttle(struct cfs_rq *cfs_rq);
-@@ -6439,6 +6122,37 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+@@ -6186,7 +5859,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+ 	check_schedstat_required();
+ 	update_stats_enqueue_fair(cfs_rq, se, flags);
+ 	if (!curr)
+-		__enqueue_entity(cfs_rq, se);
++		__enqueue_entity(cfs_rq, se, flags);
+ 	se->on_rq = 1;
+ 
+ 	if (cfs_rq->nr_queued == 1) {
+@@ -6393,6 +6066,37 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, bool first)
  	}
  
  	se->prev_sum_exec_runtime = se->sum_exec_runtime;
 +
 +	/*
 +	 * Infinity admission quantum, proportional to hierarchical share:
-+	 * q = INFINITY_Q_BASE_NS * w / W, with w = se->h_load.weight and
++	 * q = INFINITY_Q_BASE_NS * w / W, with w = se->load.weight and
 +	 * W = root inf_w_sum + w. Only the root (&rq->cfs) tracks
 +	 * contenders, so the normalizer is root-scoped; list position
-+	 * stays per-level. h_load only, O(1), u64 math.
++	 * stays per-level. load only, O(1), u64 math.
 +	 */
 +	{
 +		struct cfs_rq *root_cfs = &rq_of(cfs_rq)->cfs;
-+		unsigned long w = se->h_load.weight;
++		unsigned long w = se->load.weight;
 +		unsigned long W = root_cfs->inf_w_sum + w;
 +		u64 q;
 +
@@ -684,80 +706,69 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	}
  }
  
- static bool __dequeue_task(struct rq *rq, struct task_struct *p, int flags);
-@@ -6450,6 +6164,8 @@ pick_next_entity(struct rq *rq, bool protect)
+ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags);
+@@ -6410,6 +6114,8 @@ pick_next_entity(struct rq *rq, struct cfs_rq *cfs_rq, bool protect)
  	struct sched_entity *se;
  
  	se = pick_eevdf(cfs_rq, protect);
 +	if (!se)
 +		return NULL;
  	if (se->sched_delayed) {
- 		__dequeue_task(rq, task_of(se), DEQUEUE_SLEEP | DEQUEUE_DELAYED);
+ 		dequeue_entities(rq, se, DEQUEUE_SLEEP | DEQUEUE_DELAYED);
  		/*
-@@ -7855,7 +7571,7 @@ requeue_delayed_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+@@ -6432,7 +6138,24 @@ static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
+ 	if (prev->on_rq) {
+ 		update_stats_wait_start_fair(cfs_rq, prev);
+ 		/* Put 'current' back into the tree. */
+-		__enqueue_entity(cfs_rq, prev);
++		if (WARN_ON_ONCE(!list_empty(&prev->inf_node))) {
++			WARN_ON_ONCE(cfs_rq->curr != prev);
++			cfs_rq->curr = NULL;
++			return;
++		}
++		/*
++		 * Keep in sync with __enqueue_entity(): the seq-gated
++		 * head/tail path and the expired-tail rotation below must
++		 * agree on list and inf_w_sum accounting, using
++		 * se->load.weight only.
++		 */
++		if (!prev->inf_slice_rem) {
++			list_add_tail(&prev->inf_node, &cfs_rq->inf_list);
++			cfs_rq->inf_hog_rotations++;
++			cfs_rq->inf_w_sum += prev->load.weight;
++		} else {
++			__enqueue_entity(cfs_rq, prev, 0);
++		}
+ 		/* in !on_rq case, update occurred at dequeue */
+ 		update_load_avg(cfs_rq, prev, 0);
+ 	}
+@@ -7819,7 +7542,7 @@ requeue_delayed_entity(struct sched_entity *se)
  			__dequeue_entity(cfs_rq, se);
  		place_entity(cfs_rq, se, 0);
  		if (se != cfs_rq->curr)
 -			__enqueue_entity(cfs_rq, se);
 +			__enqueue_entity(cfs_rq, se, 0);
- 		cfs_rq->h_nr_queued++;
+ 		cfs_rq->nr_queued++;
  	}
  
-@@ -7957,7 +7673,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
- 	if (!curr) {
- 		reweight_eevdf(cfs_rq, se, weight, false);
- 		place_entity(cfs_rq, se, flags | ENQUEUE_QUEUED);
--		__enqueue_entity(cfs_rq, se);
-+		__enqueue_entity(cfs_rq, se, flags);
- 	}
- 
- 	if (!rq_h_nr_queued && rq->cfs.h_nr_queued)
-@@ -9908,11 +9624,10 @@ preempt_sync(struct rq *rq, int wake_flags,
-  */
- static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_flags)
+@@ -9882,9 +9605,10 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
  {
--	enum preempt_wakeup_action preempt_action = PREEMPT_WAKEUP_PICK;
+ 	enum preempt_wakeup_action preempt_action = PREEMPT_WAKEUP_PICK;
  	struct task_struct *donor = rq->donor;
 -	struct sched_entity *nse, *se = &donor->se, *pse = &p->se;
 +	struct sched_entity *se = &donor->se, *pse = &p->se;
- 	struct cfs_rq *cfs_rq = &rq->cfs;
--	int cse_is_idle, pse_is_idle;
+ 	struct cfs_rq *cfs_rq = task_cfs_rq(donor);
+ 	int cse_is_idle, pse_is_idle;
 +	struct sched_entity *head;
  
  	/*
  	 * XXX Getting preempted by higher class, try and find idle CPU?
-@@ -9949,43 +9664,12 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
- 	if (!sched_feat(WAKEUP_PREEMPTION))
- 		return;
- 
--	WARN_ON_ONCE(!pse);
--
--	cse_is_idle = se_is_idle(se);
--	pse_is_idle = se_is_idle(pse);
--
--	/*
--	 * Preempt an idle entity in favor of a non-idle entity (and don't preempt
--	 * in the inverse case).
--	 */
--	if (cse_is_idle && !pse_is_idle) {
--		/*
--		 * When non-idle entity preempt an idle entity,
--		 * don't give idle entity slice protection.
--		 */
--		preempt_action = PREEMPT_WAKEUP_SHORT;
--		goto preempt;
--	}
--
--	if (cse_is_idle != pse_is_idle)
--		return;
--
- 	/*
- 	 * BATCH and IDLE tasks do not preempt others.
- 	 */
+@@ -9949,17 +9673,6 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
  	if (unlikely(!normal_policy(p->policy)))
  		return;
  
--	update_curr_fair(rq);
+-	cfs_rq = cfs_rq_of(se);
+-	update_curr(cfs_rq);
 -	/*
 -	 * If @p has a shorter slice than current and @p is eligible, override
 -	 * current's slice protection in order to allow preemption.
@@ -770,7 +781,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	/*
  	 * Ignore wakee preemption on WF_FORK as it is less likely that
  	 * there is shared data as exec often follow fork. Do not
-@@ -9995,53 +9679,16 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
+@@ -9969,47 +9682,17 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
  	if ((wake_flags & WF_FORK) || pse->sched_delayed)
  		return;
  
@@ -786,7 +797,8 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -		if (wake_flags & WF_SYNC)
 -			preempt_action = preempt_sync(rq, wake_flags, pse, se);
 -	}
-+	update_curr_fair(rq);
++	cfs_rq = cfs_rq_of(se);
++	update_curr(cfs_rq);
  
 -	switch (preempt_action) {
 -	case PREEMPT_WAKEUP_NONE:
@@ -799,64 +811,33 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -	case PREEMPT_WAKEUP_PICK:
 -		break;
 -	}
- 
--pick:
--	if (cfs_rq->h_nr_queued) {
--		nse = pick_next_entity(rq, preempt_action != PREEMPT_WAKEUP_SHORT);
--		if (unlikely(!nse))
--			goto pick;
 -
--		/* If @p has become the most eligible task, force preemption */
--		if (nse == pse)
--			goto preempt;
--	}
+-pick:
+-	nse = pick_next_entity(rq, cfs_rq, preempt_action != PREEMPT_WAKEUP_SHORT);
+-	/* If @p has become the most eligible task, force preemption */
+-	if (nse == pse)
+-		goto preempt;
+-
+-	/*
+-	 * Because p is enqueued, nse being null can only mean that we
+-	 * dequeued a delayed task. If there are still entities queued in
+-	 * cfs, check if the next one will be p.
+-	 */
+-	if (!nse && cfs_rq->nr_queued)
+-		goto pick;
 -
 -	if (sched_feat(RUN_TO_PARITY))
 -		update_protect_slice(cfs_rq, se);
--
--	return;
--
--preempt:
--	if (preempt_action == PREEMPT_WAKEUP_SHORT) {
--		cancel_protect_slice(se);
--		clear_buddies(cfs_rq, se);
+ 
 +	head = list_first_entry(&cfs_rq->inf_list, struct sched_entity, inf_node);
 +	if (head == pse) {
 +		cfs_rq->inf_head_preempts++;
 +		resched_curr_lazy(rq);
- 	}
--
--	resched_curr_lazy(rq);
- }
- 
- struct task_struct *pick_task_fair(struct rq *rq, struct rq_flags *rf)
-@@ -10136,8 +9783,23 @@ static void put_prev_task_fair(struct rq *rq, struct task_struct *prev, struct t
- 	se = &prev->se;
- 	WARN_ON_ONCE(cfs_rq->curr != se);
- 	cfs_rq->curr = NULL;
--	if (se->on_rq)
--		__enqueue_entity(cfs_rq, se);
-+	if (se->on_rq) {
-+		if (WARN_ON_ONCE(!list_empty(&se->inf_node)))
-+			return;
-+		/*
-+		 * Keep in sync with __enqueue_entity(): the seq-gated
-+		 * head/tail path and the expired-tail rotation below must
-+		 * agree on list and inf_w_sum accounting, using
-+		 * se->h_load.weight only.
-+		 */
-+		if (!se->inf_slice_rem) {
-+			list_add_tail(&se->inf_node, &cfs_rq->inf_list);
-+			cfs_rq->inf_hog_rotations++;
-+			cfs_rq->inf_w_sum += se->h_load.weight;
-+		} else {
-+			__enqueue_entity(cfs_rq, se, 0);
-+		}
 +	}
- }
+ 	return;
  
- /*
-@@ -10169,28 +9831,28 @@ static void yield_task_fair(struct rq *rq)
+ preempt:
+@@ -10147,28 +9830,28 @@ static void yield_task_fair(struct rq *rq)
  	 */
  	rq_clock_skip_update(rq);
  
@@ -884,7 +865,8 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	struct cfs_rq *cfs_rq = cfs_rq_of(se);
  
  	/* !se->on_rq also covers throttled task */
- 	if (!se->on_rq || se->sched_delayed)
+-	if (!se->on_rq)
++	if (!se->on_rq || se->sched_delayed)
  		return false;
  
 +	if (se != cfs_rq->curr && !list_empty(&se->inf_node)) {
@@ -893,9 +875,9 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	}
 +
  	/* Tell the scheduler that we'd really like se to run next. */
- 	set_next_buddy(&task_rq(p)->cfs, se);
+ 	set_next_buddy(se);
  
-@@ -15208,6 +14870,20 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
+@@ -15150,6 +14833,20 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
  	cfs_rq->tasks_timeline = RB_ROOT_CACHED;
  	cfs_rq->zero_vruntime = (u64)(-(1LL << 20));
  	raw_spin_lock_init(&cfs_rq->removed.lock);
@@ -916,7 +898,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
-@@ -15335,6 +15011,8 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
+@@ -15286,6 +14983,8 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
  	/* guarantee group entities always have weight */
  	update_load_set(&se->load, NICE_0_LOAD);
  	se->parent = parent;
@@ -925,7 +907,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  static DEFINE_MUTEX(shares_mutex);
-@@ -15532,6 +15210,300 @@ void print_cfs_stats(struct seq_file *m, int cpu)
+@@ -15484,6 +15183,300 @@ void print_cfs_stats(struct seq_file *m, int cpu)
  	rcu_read_unlock();
  }
  
@@ -1234,8 +1216,8 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  
 +	/*
 +	 * Infinity-queue (inf) FIFO state. inf_w_sum is the sum of
-+	 * se->h_load.weight over entities on inf_list; never
-+	 * se->load.weight, so hierarchical shares are honored.
++	 * se->load.weight over entities on inf_list; load-only
++	 * accounting, so shares are honored end to end.
 +	 */
 +	struct list_head	inf_list;
 +	u32			inf_seq;

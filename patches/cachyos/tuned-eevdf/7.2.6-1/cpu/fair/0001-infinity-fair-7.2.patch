@@ -376,7 +376,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -			best = se;
 -			break;
 +	if (list_empty(&cfs_rq->inf_list)) {
-+		if (curr && curr->on_rq && entity_is_task(curr)) {
++		if (curr && curr->on_rq) {
 +			cfs_rq->inf_curr_fallback_picks++;
 +			return curr;
  		}
@@ -878,7 +878,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
  {
  	struct sched_entity *se = &p->se;
-+	struct cfs_rq *cfs_rq = &task_rq(p)->cfs;
++	struct cfs_rq *cfs_rq = cfs_rq_of(se);
  
  	/* !se->on_rq also covers throttled task */
  	if (!se->on_rq || se->sched_delayed)
@@ -1252,3 +1252,13 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	struct rq		*rq;	/* CPU runqueue to which this cfs_rq is attached */
  
  	/*
+--- a/init/init_task.c
++++ b/init/init_task.c
+@@ -128,6 +128,7 @@ struct task_struct init_task
+ 	},
+ 	.se		= {
+ 		.group_node 	= LIST_HEAD_INIT(init_task.se.group_node),
++		.inf_node	= LIST_HEAD_INIT(init_task.se.inf_node),
+ 	},
+ 	.rt		= {
+ 		.run_list	= LIST_HEAD_INIT(init_task.rt.run_list),
