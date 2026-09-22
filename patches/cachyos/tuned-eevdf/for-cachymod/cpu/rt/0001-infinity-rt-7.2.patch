@@ -385,7 +385,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	rows[5].note = "sole fast-skip";
 +
 +	/* One pass to size label and note columns. */
-+	lw = strlen("counter");
++	lw = strlen("stat");
 +	nw = strlen("note");
 +	for (i = 0; i < ARRAY_SIZE(rows); i++) {
 +		unsigned int ll = strlen(rows[i].label);
@@ -404,7 +404,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	vw = INF_RT_VAL_W;
 +
 +	inf_rt_emit_sep(m, lw, vw, nw);
-+	seq_printf(m, "| %-*s | %*s | %-*s |\n", lw, "counter", vw,
++	seq_printf(m, "| %-*s | %*s | %-*s |\n", lw, "stat", vw,
 +		   "value", nw, "note");
 +	inf_rt_emit_sep(m, lw, vw, nw);
 +

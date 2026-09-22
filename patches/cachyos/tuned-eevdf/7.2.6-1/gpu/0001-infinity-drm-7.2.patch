@@ -433,7 +433,7 @@ index 0464d32..b7deca5 100644
 +	mutex_unlock(&inf_tracked_lock);
 +
 +	/* One pass: truncate, pretty-print and measure label/note widths. */
-+	lw = (int)strlen("counter");
++	lw = (int)strlen("stat");
 +	nw = (int)strlen("note");
 +	for (j = 0; j < (int)ARRAY_SIZE(labels); j++) {
 +		inf_trunc(labels[j], lbuf[j], LABEL_CAP);
@@ -446,7 +446,7 @@ index 0464d32..b7deca5 100644
 +	}
 +
 +	emit_sep(m, lw, vw, nw);
-+	seq_printf(m, "| %-*s | %*s | %-*s |\n", lw, "counter", vw, "value", nw, "note");
++	seq_printf(m, "| %-*s | %*s | %-*s |\n", lw, "stat", vw, "value", nw, "note");
 +	emit_sep(m, lw, vw, nw);
 +	for (j = 0; j < (int)ARRAY_SIZE(labels); j++) {
 +		char row[LABEL_CAP + NOTE_CAP + INF_VAL_W + 16];
