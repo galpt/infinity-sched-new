@@ -10,6 +10,9 @@ It uses a completely different approach compared to the [old version of the Infi
 
 ## How to build a patched kernel
 
+> [!TIP]
+> For CachyOS users, the CachyOS Kernel Manager can be used to build the kernel easily with the Infinity patches included. The patches were tested against the 7.2.6-1 initially. You may open a new [Issue](https://github.com/galpt/infinity-sched-new/issues) if you need patches for other kernel versions.
+
 Fetch this repo without its history to save time, then pick the cachyos tuned-eevdf 7.2.6-1 series and apply it in series order, fair first, then rt, then gpu. Check that each patch applies cleanly with zero fuzz, then build as usual.
 
 ```sh
