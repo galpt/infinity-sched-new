@@ -44,6 +44,40 @@ patch -p1 -R < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/c
 patch -p1 -R < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/cpu/fair/0001-infinity-fair-7.2.patch
 ```
 
+For cachyos tuned-eevdf 7.2.6-7, pick the 7.2.6-7 series and apply it in series order with the same checks, substituting 7.2.6-7 for 7.2.6-1 in the paths above.
+
+```sh
+git clone --depth 1 https://github.com/galpt/infinity-sched-new.git
+cd /path/to/linux-7.2.6
+patch -p1 -N -F 0 --dry-run < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-7/cpu/fair/0001-infinity-fair-7.2.patch
+patch -p1 -N -F 0 --dry-run < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-7/cpu/rt/0001-infinity-rt-7.2.patch
+patch -p1 -N -F 0 --dry-run < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-7/gpu/0001-infinity-drm-7.2.patch
+patch -p1 -N -F 0 < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-7/cpu/fair/0001-infinity-fair-7.2.patch
+patch -p1 -N -F 0 < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-7/cpu/rt/0001-infinity-rt-7.2.patch
+patch -p1 -N -F 0 < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-7/gpu/0001-infinity-drm-7.2.patch
+make -j$(nproc)
+```
+
+Check apply state with git and lint each patch with checkpatch in strict mode.
+
+```sh
+git apply --check patches/cachyos/tuned-eevdf/7.2.6-7/cpu/fair/0001-infinity-fair-7.2.patch
+git apply --check patches/cachyos/tuned-eevdf/7.2.6-7/cpu/rt/0001-infinity-rt-7.2.patch
+git apply --check patches/cachyos/tuned-eevdf/7.2.6-7/gpu/0001-infinity-drm-7.2.patch
+perl scripts/checkpatch.pl --strict --patch patches/cachyos/tuned-eevdf/7.2.6-7/cpu/fair/0001-infinity-fair-7.2.patch
+perl scripts/checkpatch.pl --strict --patch patches/cachyos/tuned-eevdf/7.2.6-7/cpu/rt/0001-infinity-rt-7.2.patch
+perl scripts/checkpatch.pl --strict --patch patches/cachyos/tuned-eevdf/7.2.6-7/gpu/0001-infinity-drm-7.2.patch
+```
+
+To drop the 7.2.6-7 series from a tree, reverse in gpu, rt, fair order.
+
+```sh
+cd /path/to/linux-7.2.6
+patch -p1 -R < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-7/gpu/0001-infinity-drm-7.2.patch
+patch -p1 -R < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-7/cpu/rt/0001-infinity-rt-7.2.patch
+patch -p1 -R < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-7/cpu/fair/0001-infinity-fair-7.2.patch
+```
+
 ## How it is checked
 
 On a booted kernel, confirm Infinity is running by reading the debugfs boxes. Counters at zero on an idle machine mean the discipline is live but quiet. Rising head and tail counts under load mean it is scheduling.
