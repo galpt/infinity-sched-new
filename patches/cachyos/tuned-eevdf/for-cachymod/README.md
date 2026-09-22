@@ -1,4 +1,4 @@
-# For Cachymod
+# For CachyMod
 
 This variant carries the Infinity queue for CachyMod trees. It keeps CachyMod defaults intact and adds bounded last in first out ordering with weighted quantum and expiry.
 
