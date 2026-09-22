@@ -51,6 +51,8 @@ patch -p1 -R < /path/to/infinity-sched-new/patches/cachyos/tuned-eevdf/7.2.6-1/c
 
 On a booted kernel, confirm Infinity is running by reading the debugfs boxes. Counters at zero on an idle machine mean the discipline is live but quiet. Rising head and tail counts under load mean it is scheduling.
 
+yield_to_moves only advances on in-kernel yield_to() (e.g. KVM overcommit); 0 on desktop is expected.
+
 ```sh
 sudo cat /sys/kernel/debug/infinity_fair
 sudo cat /sys/kernel/debug/infinity_rt
