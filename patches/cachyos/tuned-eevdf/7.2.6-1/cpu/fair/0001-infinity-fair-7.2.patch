@@ -39,7 +39,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	struct sched_entity		*parent;
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -4587,6 +4587,8 @@ static void __sched_fork(u64 clone_flags, struct task_struct *p)
+@@ -4587,6 +4587,8 @@ static void __sched_fork(u64 clone_flags
  	p->se.vlag			= 0;
  	p->se.rel_deadline		= 0;
  	INIT_LIST_HEAD(&p->se.group_node);
@@ -58,7 +58,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  #include <linux/prefetch.h>
  
  #include <asm/switch_to.h>
-@@ -86,6 +87,12 @@ unsigned int sysctl_sched_base_slice			= 700000ULL;
+@@ -86,6 +87,12 @@ unsigned int sysctl_sched_base_slice			=
  static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
  #endif /* CONFIG_CACHY */
  
@@ -71,7 +71,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  #ifdef CONFIG_CACHY
  __read_mostly unsigned int sysctl_sched_migration_cost	= 400000UL;
  #else
-@@ -656,79 +663,6 @@ static inline unsigned long avg_vruntime_weight(struct cfs_rq *cfs_rq, unsigned
+@@ -656,79 +663,6 @@ static inline unsigned long avg_vruntime
  	return w;
  }
  
@@ -151,7 +151,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  static inline
  void update_zero_vruntime(struct cfs_rq *cfs_rq, s64 delta)
  {
-@@ -753,38 +687,8 @@ void update_zero_vruntime(struct cfs_rq *cfs_rq, s64 delta)
+@@ -753,38 +687,8 @@ void update_zero_vruntime(struct cfs_rq
   */
  u64 avg_vruntime(struct cfs_rq *cfs_rq)
  {
@@ -192,7 +192,24 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  static inline u64 cfs_rq_max_slice(struct cfs_rq *cfs_rq);
-@@ -832,18 +736,9 @@ static s64 entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se, u64 avrunt
+@@ -803,16 +707,6 @@ static inline u64 cfs_rq_max_slice(struc
+  *
+  *   -r_max < lag < max(r_max, q)
+  */
+-static s64 entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se, u64 avruntime)
+-{
+-	u64 max_slice = cfs_rq_max_slice(cfs_rq) + TICK_NSEC;
+-	s64 vlag, limit;
+-
+-	vlag = avruntime - se->vruntime;
+-	limit = calc_delta_fair(max_slice, se);
+-
+-	return clamp(vlag, -limit, limit);
+-}
+ 
+ /*
+  * Delayed dequeue aims to reduce the negative lag of a dequeued task. While
+@@ -832,18 +726,9 @@ static s64 entity_lag(struct cfs_rq *cfs
  static __always_inline
  bool update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
  {
@@ -214,7 +231,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  /*
-@@ -1009,16 +904,29 @@ RB_DECLARE_CALLBACKS(static, min_vruntime_cb, struct sched_entity,
+@@ -1009,16 +894,29 @@ RB_DECLARE_CALLBACKS(static, min_vruntim
  /*
   * Enqueue an entity into the rb-tree:
   */
@@ -250,7 +267,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
-@@ -1026,9 +934,14 @@ static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+@@ -1026,9 +924,14 @@ static void __dequeue_entity(struct cfs_
  	WARN_ON_ONCE(&rq_of(cfs_rq)->cfs != cfs_rq);
  	WARN_ON_ONCE(!entity_is_task(se));
  
@@ -268,7 +285,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  struct sched_entity *__pick_root_entity(struct cfs_rq *cfs_rq)
-@@ -1061,35 +974,25 @@ struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
+@@ -1061,35 +964,25 @@ struct sched_entity *__pick_first_entity
   */
  static inline void set_protect_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
  {
@@ -311,7 +328,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  /*
-@@ -1113,73 +1016,20 @@ static inline void cancel_protect_slice(struct sched_entity *se)
+@@ -1113,73 +1006,20 @@ static inline void cancel_protect_slice(
   */
  static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq, bool protect)
  {
@@ -320,14 +337,15 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	/* Root pick needs the task cursor: h_curr is the group entity. */
  	struct sched_entity *curr = cfs_rq->curr;
 -	struct sched_entity *best = NULL;
--
+ 
 -	/*
 -	 * We can safely skip eligibility check if there is only one entity
 -	 * in this cfs_rq, saving some cycles.
 -	 */
 -	if (cfs_rq->h_nr_queued == 1)
 -		return curr && curr->on_rq ? curr : se;
--
++	(void)protect;
+ 
 -	/*
 -	 * Picking the ->next buddy will affect latency but not fairness.
 -	 */
@@ -363,10 +381,9 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -			node = left;
 -			continue;
 -		}
- 
+-
 -		se = __node_2_se(node);
-+	(void)protect;
- 
+-
 -		/*
 -		 * The left subtree either is empty or has no eligible
 -		 * entity, so check the current node since it is the one
@@ -393,10 +410,16 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  struct sched_entity *__pick_last_entity(struct cfs_rq *cfs_rq)
-@@ -1215,27 +1065,9 @@ static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
-  */
- static bool update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
- {
+@@ -1209,35 +1049,6 @@ int sched_update_scaling(void)
+ 
+ static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
+ 
+-/*
+- * XXX: strictly: vd_i += N*r_i/w_i such that: vd_i > ve_i
+- * this is probably good enough.
+- */
+-static bool update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
+-{
 -	if (vruntime_cmp(se->vruntime, "<", se->deadline))
 -		return false;
 -
@@ -418,13 +441,12 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -	 * The task has consumed its request, reschedule.
 -	 */
 -	return true;
-+	(void)cfs_rq;
-+	(void)se;
-+	return false;
- }
- 
+-}
+-
  #include "pelt.h"
-@@ -1969,7 +1801,6 @@ static void update_curr(struct cfs_rq *cfs_rq)
+ 
+ static int select_idle_sibling(struct task_struct *p, int prev_cpu, int cpu, int sync);
+@@ -1969,7 +1780,6 @@ static void update_curr(struct cfs_rq *c
  	struct sched_entity *curr = cfs_rq->h_curr;
  	struct rq *rq = rq_of(cfs_rq);
  	s64 delta_exec;
@@ -432,7 +454,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  
  	if (unlikely(!curr))
  		return;
-@@ -1985,9 +1816,6 @@ static void update_curr(struct cfs_rq *cfs_rq)
+@@ -1985,9 +1795,6 @@ static void update_curr(struct cfs_rq *c
  
  	cfs_rq = &rq->cfs;
  
@@ -442,7 +464,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	/*
  	 * If the fair_server is active, we need to account for the
  	 * fair_server time whether or not the task is running on
-@@ -2003,7 +1831,12 @@ static void update_curr(struct cfs_rq *cfs_rq)
+@@ -2003,7 +1810,12 @@ static void update_curr(struct cfs_rq *c
  	if (cfs_rq->h_nr_queued == 1)
  		return;
  
@@ -456,7 +478,114 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  		resched_curr_lazy(rq);
  		clear_buddies(cfs_rq, curr);
  	}
-@@ -4651,40 +4484,22 @@ static void reweight_eevdf(struct cfs_rq *cfs_rq, struct sched_entity *se,
+@@ -4544,147 +4356,26 @@ dequeue_load_avg(struct cfs_rq *cfs_rq,
+ 		    se_weight(se) * -se->avg.load_sum);
+ }
+ 
+-static void
+-rescale_entity(struct sched_entity *se, unsigned long weight, bool rel_vprot)
+-{
+-	long old_weight = se->h_load.weight;
+-
+-	/*
+-	 * VRUNTIME
+-	 * --------
+-	 *
+-	 * COROLLARY #1: The virtual runtime of the entity needs to be
+-	 * adjusted if re-weight at !0-lag point.
+-	 *
+-	 * Proof: For contradiction assume this is not true, so we can
+-	 * re-weight without changing vruntime at !0-lag point.
+-	 *
+-	 *             Weight	VRuntime   Avg-VRuntime
+-	 *     before    w          v            V
+-	 *      after    w'         v'           V'
+-	 *
+-	 * Since lag needs to be preserved through re-weight:
+-	 *
+-	 *	lag = (V - v)*w = (V'- v')*w', where v = v'
+-	 *	==>	V' = (V - v)*w/w' + v		(1)
+-	 *
+-	 * Let W be the total weight of the entities before reweight,
+-	 * since V' is the new weighted average of entities:
+-	 *
+-	 *	V' = (WV + w'v - wv) / (W + w' - w)	(2)
+-	 *
+-	 * by using (1) & (2) we obtain:
+-	 *
+-	 *	(WV + w'v - wv) / (W + w' - w) = (V - v)*w/w' + v
+-	 *	==> (WV-Wv+Wv+w'v-wv)/(W+w'-w) = (V - v)*w/w' + v
+-	 *	==> (WV - Wv)/(W + w' - w) + v = (V - v)*w/w' + v
+-	 *	==>	(V - v)*W/(W + w' - w) = (V - v)*w/w' (3)
+-	 *
+-	 * Since we are doing at !0-lag point which means V != v, we
+-	 * can simplify (3):
+-	 *
+-	 *	==>	W / (W + w' - w) = w / w'
+-	 *	==>	Ww' = Ww + ww' - ww
+-	 *	==>	W * (w' - w) = w * (w' - w)
+-	 *	==>	W = w	(re-weight indicates w' != w)
+-	 *
+-	 * So the cfs_rq contains only one entity, hence vruntime of
+-	 * the entity @v should always equal to the cfs_rq's weighted
+-	 * average vruntime @V, which means we will always re-weight
+-	 * at 0-lag point, thus breach assumption. Proof completed.
+-	 *
+-	 *
+-	 * COROLLARY #2: Re-weight does NOT affect weighted average
+-	 * vruntime of all the entities.
+-	 *
+-	 * Proof: According to corollary #1, Eq. (1) should be:
+-	 *
+-	 *	(V - v)*w = (V' - v')*w'
+-	 *	==>    v' = V' - (V - v)*w/w'		(4)
+-	 *
+-	 * According to the weighted average formula, we have:
+-	 *
+-	 *	V' = (WV - wv + w'v') / (W - w + w')
+-	 *	   = (WV - wv + w'(V' - (V - v)w/w')) / (W - w + w')
+-	 *	   = (WV - wv + w'V' - Vw + wv) / (W - w + w')
+-	 *	   = (WV + w'V' - Vw) / (W - w + w')
+-	 *
+-	 *	==>  V'*(W - w + w') = WV + w'V' - Vw
+-	 *	==>	V' * (W - w) = (W - w) * V	(5)
+-	 *
+-	 * If the entity is the only one in the cfs_rq, then reweight
+-	 * always occurs at 0-lag point, so V won't change. Or else
+-	 * there are other entities, hence W != w, then Eq. (5) turns
+-	 * into V' = V. So V won't change in either case, proof done.
+-	 *
+-	 *
+-	 * So according to corollary #1 & #2, the effect of re-weight
+-	 * on vruntime should be:
+-	 *
+-	 *	v' = V' - (V - v) * w / w'		(4)
+-	 *	   = V  - (V - v) * w / w'
+-	 *	   = V  - vl * w / w'
+-	 *	   = V  - vl'
+-	 */
+-	se->vlag = div64_long(se->vlag * old_weight, weight);
+-
+-	/*
+-	 * DEADLINE
+-	 * --------
+-	 *
+-	 * When the weight changes, the virtual time slope changes and
+-	 * we should adjust the relative virtual deadline accordingly.
+-	 *
+-	 *	d' = v' + (d - v)*w/w'
+-	 *	   = V' - (V - v)*w/w' + (d - v)*w/w'
+-	 *	   = V  - (V - v)*w/w' + (d - v)*w/w'
+-	 *	   = V  + (d - V)*w/w'
+-	 */
+-	if (se->rel_deadline)
+-		se->deadline = div64_long(se->deadline * old_weight, weight);
+-
+-	if (rel_vprot)
+-		se->vprot = div64_long(se->vprot * old_weight, weight);
+-}
+-
+ static void reweight_eevdf(struct cfs_rq *cfs_rq, struct sched_entity *se,
  			   unsigned long weight, bool on_rq)
  {
  	bool curr = cfs_rq->curr == se;
@@ -499,7 +628,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  		cfs_rq->h_nr_queued++;
  	}
  }
-@@ -6114,141 +5929,9 @@ void __setparam_fair(struct task_struct *p, const struct sched_attr *attr)
+@@ -6114,141 +5805,9 @@ void __setparam_fair(struct task_struct
  static void
  place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
  {
@@ -644,7 +773,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  static void check_enqueue_throttle(struct cfs_rq *cfs_rq);
-@@ -6439,6 +6122,37 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+@@ -6439,6 +5998,37 @@ set_next_entity(struct cfs_rq *cfs_rq, s
  	}
  
  	se->prev_sum_exec_runtime = se->sum_exec_runtime;
@@ -682,7 +811,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  static bool __dequeue_task(struct rq *rq, struct task_struct *p, int flags);
-@@ -6450,6 +6164,8 @@ pick_next_entity(struct rq *rq, bool protect)
+@@ -6450,6 +6040,8 @@ pick_next_entity(struct rq *rq, bool pro
  	struct sched_entity *se;
  
  	se = pick_eevdf(cfs_rq, protect);
@@ -691,7 +820,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	if (se->sched_delayed) {
  		__dequeue_task(rq, task_of(se), DEQUEUE_SLEEP | DEQUEUE_DELAYED);
  		/*
-@@ -7855,7 +7571,7 @@ requeue_delayed_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+@@ -7855,7 +7447,7 @@ requeue_delayed_entity(struct cfs_rq *cf
  			__dequeue_entity(cfs_rq, se);
  		place_entity(cfs_rq, se, 0);
  		if (se != cfs_rq->curr)
@@ -700,7 +829,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  		cfs_rq->h_nr_queued++;
  	}
  
-@@ -7957,7 +7673,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
+@@ -7957,7 +7549,7 @@ enqueue_task_fair(struct rq *rq, struct
  	if (!curr) {
  		reweight_eevdf(cfs_rq, se, weight, false);
  		place_entity(cfs_rq, se, flags | ENQUEUE_QUEUED);
@@ -709,7 +838,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	}
  
  	if (!rq_h_nr_queued && rq->cfs.h_nr_queued)
-@@ -9908,11 +9624,10 @@ preempt_sync(struct rq *rq, int wake_flags,
+@@ -9908,11 +9500,10 @@ preempt_sync(struct rq *rq, int wake_fla
   */
  static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_flags)
  {
@@ -723,7 +852,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  
  	/*
  	 * XXX Getting preempted by higher class, try and find idle CPU?
-@@ -9949,43 +9664,12 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
+@@ -9949,43 +9540,12 @@ static void wakeup_preempt_fair(struct r
  	if (!sched_feat(WAKEUP_PREEMPTION))
  		return;
  
@@ -767,7 +896,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	/*
  	 * Ignore wakee preemption on WF_FORK as it is less likely that
  	 * there is shared data as exec often follow fork. Do not
-@@ -9995,53 +9679,16 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
+@@ -9995,53 +9555,16 @@ static void wakeup_preempt_fair(struct r
  	if ((wake_flags & WF_FORK) || pse->sched_delayed)
  		return;
  
@@ -796,7 +925,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -	case PREEMPT_WAKEUP_PICK:
 -		break;
 -	}
- 
+-
 -pick:
 -	if (cfs_rq->h_nr_queued) {
 -		nse = pick_next_entity(rq, preempt_action != PREEMPT_WAKEUP_SHORT);
@@ -810,7 +939,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -
 -	if (sched_feat(RUN_TO_PARITY))
 -		update_protect_slice(cfs_rq, se);
--
+ 
 -	return;
 -
 -preempt:
@@ -827,7 +956,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  struct task_struct *pick_task_fair(struct rq *rq, struct rq_flags *rf)
-@@ -10136,8 +9783,23 @@ static void put_prev_task_fair(struct rq *rq, struct task_struct *prev, struct t
+@@ -10136,8 +9659,23 @@ static void put_prev_task_fair(struct rq
  	se = &prev->se;
  	WARN_ON_ONCE(cfs_rq->curr != se);
  	cfs_rq->curr = NULL;
@@ -853,7 +982,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  /*
-@@ -10169,28 +9831,28 @@ static void yield_task_fair(struct rq *rq)
+@@ -10169,28 +9707,28 @@ static void yield_task_fair(struct rq *r
  	 */
  	rq_clock_skip_update(rq);
  
@@ -865,14 +994,15 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -	 * end up in a loop where the core scheduler picks the yielding task,
 -	 * which yields immediately again; without the condition the vruntime
 -	 * ends up quickly running away.
-+	 * Yield relies on expiry plus put_prev_entity() rotation: the
-+	 * running donor is cfs_rq->curr with an empty inf_node, so no
-+	 * list move can fire here.
- 	 */
+-	 */
 -	if (entity_eligible(cfs_rq, se)) {
 -		se->vruntime = se->deadline;
 -		update_deadline(cfs_rq, se);
 -	}
++	 * Yield relies on expiry plus put_prev_entity() rotation: the
++	 * running donor is cfs_rq->curr with an empty inf_node, so no
++	 * list move can fire here.
++	 */
  }
  
  static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
@@ -892,7 +1022,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	/* Tell the scheduler that we'd really like se to run next. */
  	set_next_buddy(&task_rq(p)->cfs, se);
  
-@@ -15208,6 +14870,20 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
+@@ -15208,6 +14746,20 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
  	cfs_rq->tasks_timeline = RB_ROOT_CACHED;
  	cfs_rq->zero_vruntime = (u64)(-(1LL << 20));
  	raw_spin_lock_init(&cfs_rq->removed.lock);
@@ -913,7 +1043,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
-@@ -15335,6 +15011,8 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
+@@ -15335,6 +14887,8 @@ void init_tg_cfs_entry(struct task_group
  	/* guarantee group entities always have weight */
  	update_load_set(&se->load, NICE_0_LOAD);
  	se->parent = parent;
@@ -922,7 +1052,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  static DEFINE_MUTEX(shares_mutex);
-@@ -15532,6 +15210,300 @@ void print_cfs_stats(struct seq_file *m, int cpu)
+@@ -15532,6 +15086,300 @@ void print_cfs_stats(struct seq_file *m,
  	rcu_read_unlock();
  }
  
@@ -1254,7 +1384,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	/*
 --- a/init/init_task.c
 +++ b/init/init_task.c
-@@ -128,6 +128,7 @@ struct task_struct init_task
+@@ -128,6 +128,7 @@ struct task_struct init_task __aligned(L
  	},
  	.se		= {
  		.group_node 	= LIST_HEAD_INIT(init_task.se.group_node),
