@@ -985,7 +985,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  /*
-@@ -10169,28 +9707,28 @@ static void yield_task_fair(struct rq *rq)
+@@ -10169,28 +9707,29 @@ static void yield_task_fair(struct rq *rq)
  	 */
  	rq_clock_skip_update(rq);
  
@@ -1010,7 +1010,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
  {
  	struct sched_entity *se = &p->se;
-+	struct cfs_rq *cfs_rq = cfs_rq_of(se);
++	struct cfs_rq *cfs_rq = &task_rq(p)->cfs;
  
  	/* !se->on_rq also covers throttled task */
  	if (!se->on_rq || se->sched_delayed)
@@ -1020,6 +1020,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +		list_move(&se->inf_node, &cfs_rq->inf_list);
 +		cfs_rq->inf_yield_to_moves++;
 +	}
++	/* No inf_w_sum change: same-list head move. */
 +
  	/* Tell the scheduler that we'd really like se to run next. */
  	set_next_buddy(&task_rq(p)->cfs, se);

@@ -968,7 +968,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	return;
  
  preempt:
-@@ -10147,28 +9706,28 @@ static void yield_task_fair(struct rq *rq)
+@@ -10147,28 +9706,29 @@ static void yield_task_fair(struct rq *rq)
  	 */
  	rq_clock_skip_update(rq);
  
@@ -1004,6 +1004,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +		list_move(&se->inf_node, &cfs_rq->inf_list);
 +		cfs_rq->inf_yield_to_moves++;
 +	}
++	/* No inf_w_sum change: same-list head move. */
 +
  	/* Tell the scheduler that we'd really like se to run next. */
  	set_next_buddy(se);
