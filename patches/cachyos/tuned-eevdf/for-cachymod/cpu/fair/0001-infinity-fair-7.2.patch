@@ -58,7 +58,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  
  #include <asm/switch_to.h>
  
-@@ -83,6 +84,12 @@ unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
+@@ -83,6 +84,13 @@ unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
  unsigned int sysctl_sched_base_slice			= 800000000ULL / HZ * (HZ > 500? 2: 1);
  static unsigned int normalized_sysctl_sched_base_slice	= 800000000ULL / HZ * (HZ > 500? 2: 1);
  
@@ -67,6 +67,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 + * no sysctl/Kconfig/proc/debugfs knob (deliberately fixed at 1ms).
 + */
 +#define INFINITY_Q_BASE_NS 1000000ULL
++#define INFINITY_Q_MIN_NS 64000ULL
 +
  __read_mostly unsigned int sysctl_sched_migration_cost	= 400000UL;
  
@@ -807,22 +808,22 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +
 +	/*
 +	 * Infinity admission quantum, proportional to hierarchical share:
-+	 * q = INFINITY_Q_BASE_NS * w / W, with w = se->load.weight and
++	 * q = clamp(INFINITY_Q_BASE_NS * w / W, INFINITY_Q_MIN_NS,
++	 *	     INFINITY_Q_BASE_NS), with w = se->load.weight and
 +	 * W = root inf_w_sum + w. Only the root (&rq->cfs) tracks
-+	 * contenders, so the normalizer is root-scoped; list position
-+	 * stays per-level. load only, O(1), u64 math.
++	 * contenders and gauges, so the normalizer is root-scoped;
++	 * list position stays per-level. load only, O(1), u64 math.
 +	 */
 +	{
 +		struct cfs_rq *root_cfs = &rq_of(cfs_rq)->cfs;
 +		unsigned long w = se->load.weight;
 +		unsigned long W = root_cfs->inf_w_sum + w;
-+		u64 q;
++		u64 calc, q;
 +
 +		if (!W)
 +			W = 1;
-+		q = div_u64(INFINITY_Q_BASE_NS * (u64)w, (u64)W);
-+		if (!q)
-+			q = 1;
++		calc = div_u64(INFINITY_Q_BASE_NS * (u64)w, (u64)W);
++		q = clamp(calc, INFINITY_Q_MIN_NS, INFINITY_Q_BASE_NS);
 +		se->inf_slice_rem = q;
 +		root_cfs->inf_quantum_last = q;
 +		if (!root_cfs->inf_quantum_min && !root_cfs->inf_quantum_max) {
