@@ -22,7 +22,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 ---
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h
-@@ -601,6 +601,14 @@ struct sched_entity {
+@@ -601,6 +601,17 @@ struct sched_entity {
  
  	u64				nr_migrations;
  
@@ -30,21 +30,25 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	 * Infinity-queue (inf) FIFO node. Linked on cfs_rq->inf_list
 +	 * while queued via the inf path; list-empty otherwise.
 +	 * inf_slice_rem is the remaining inf quantum, nanoseconds.
++	 * inf_enq_ts is the enqueue timestamp, nanoseconds, for
++	 * wait-bound tail boost to avoid starvation.
 +	 */
 +	struct list_head		inf_node;
 +	u64				inf_slice_rem;
++	u64				inf_enq_ts;
 +
  #ifdef CONFIG_FAIR_GROUP_SCHED
  	int				depth;
  	struct sched_entity		*parent;
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -4587,6 +4587,8 @@ static void __sched_fork(u64 clone_flags, struct task_struct *p)
+@@ -4587,6 +4587,9 @@ static void __sched_fork(u64 clone_flags, struct task_struct *p)
  	p->se.vlag			= 0;
  	p->se.rel_deadline		= 0;
  	INIT_LIST_HEAD(&p->se.group_node);
 +	INIT_LIST_HEAD(&p->se.inf_node);
 +	p->se.inf_slice_rem		= 0;
++	p->se.inf_enq_ts		= 0;
  
  	/* A delayed task cannot be in clone(). */
  	WARN_ON_ONCE(p->se.sched_delayed);
@@ -58,7 +62,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  #include <linux/prefetch.h>
  
  #include <asm/switch_to.h>
-@@ -86,6 +87,13 @@ unsigned int sysctl_sched_base_slice			= 700000ULL;
+@@ -86,6 +87,15 @@ unsigned int sysctl_sched_base_slice			= 700000ULL;
  static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
  #endif /* CONFIG_CACHY */
  
@@ -68,6 +72,8 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 + */
 +#define INFINITY_Q_BASE_NS 1000000ULL
 +#define INFINITY_Q_MIN_NS 64000ULL
++/* Infinity wait bound, nanoseconds: 8ms starve-avoid tail boost. */
++#define INFINITY_WAIT_BOUND_NS 8000000ULL
 +
  #ifdef CONFIG_CACHY
  __read_mostly unsigned int sysctl_sched_migration_cost	= 400000UL;
@@ -232,7 +238,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  /*
-@@ -1017,18 +902,30 @@ RB_DECLARE_CALLBACKS_MULTI(static, min_vruntime_cb, struct sched_entity,
+@@ -1017,18 +902,31 @@ RB_DECLARE_CALLBACKS_MULTI(static, min_vruntime_cb, struct sched_entity,
  /*
   * Enqueue an entity into the rb-tree:
   */
@@ -267,6 +273,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +			cfs_rq->inf_head_inserts++;
 +		}
 +	}
++	se->inf_enq_ts = rq_clock(rq_of(cfs_rq));
 +	cfs_rq->inf_w_sum += se->h_load.weight;
  }
  
@@ -332,7 +339,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  /*
-@@ -1113,73 +1006,20 @@ static inline void cancel_protect_slice(struct sched_entity *se)
+@@ -1113,73 +1006,35 @@ static inline void cancel_protect_slice(struct sched_entity *se)
   */
  static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq, bool protect)
  {
@@ -410,7 +417,22 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -		best = curr;
  
 -	return best;
-+	return list_first_entry(&cfs_rq->inf_list, struct sched_entity, inf_node);
++	{
++		struct sched_entity *head =
++			list_first_entry(&cfs_rq->inf_list,
++					 struct sched_entity, inf_node);
++		struct sched_entity *tail =
++			list_last_entry(&cfs_rq->inf_list,
++					struct sched_entity, inf_node);
++
++		if (tail != head && tail->inf_enq_ts &&
++		    rq_clock(rq_of(cfs_rq)) - tail->inf_enq_ts >
++		    INFINITY_WAIT_BOUND_NS) {
++			cfs_rq->inf_wait_boosts++;
++			return tail;
++		}
++		return head;
++	}
  }
  
  struct sched_entity *__pick_last_entity(struct cfs_rq *cfs_rq)
@@ -960,7 +982,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  struct task_struct *pick_task_fair(struct rq *rq, struct rq_flags *rf)
-@@ -10136,8 +9659,23 @@ static void put_prev_task_fair(struct rq *rq, struct task_struct *prev, struct t
+@@ -10136,8 +9659,24 @@ static void put_prev_task_fair(struct rq *rq, struct task_struct *prev, struct t
  	se = &prev->se;
  	WARN_ON_ONCE(cfs_rq->curr != se);
  	cfs_rq->curr = NULL;
@@ -978,6 +1000,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +		if (!se->inf_slice_rem) {
 +			list_add_tail(&se->inf_node, &cfs_rq->inf_list);
 +			cfs_rq->inf_hog_rotations++;
++			se->inf_enq_ts = rq_clock(rq);
 +			cfs_rq->inf_w_sum += se->h_load.weight;
 +		} else {
 +			__enqueue_entity(cfs_rq, se, 0);
@@ -1026,7 +1049,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	/* Tell the scheduler that we'd really like se to run next. */
  	set_next_buddy(&task_rq(p)->cfs, se);
  
-@@ -15208,6 +14746,20 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
+@@ -15208,6 +14746,21 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
  	cfs_rq->tasks_timeline = RB_ROOT_CACHED;
  	cfs_rq->zero_vruntime = (u64)(-(1LL << 20));
  	raw_spin_lock_init(&cfs_rq->removed.lock);
@@ -1041,29 +1064,31 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	cfs_rq->inf_yield_to_moves = 0;
 +	cfs_rq->inf_curr_fallback_picks = 0;
 +	cfs_rq->inf_clamp_fires = 0;
++	cfs_rq->inf_wait_boosts = 0;
 +	cfs_rq->inf_quantum_last = 0;
 +	cfs_rq->inf_quantum_min = 0;
 +	cfs_rq->inf_quantum_max = 0;
  }
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
-@@ -15335,6 +14887,8 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
+@@ -15335,6 +14887,9 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
  	/* guarantee group entities always have weight */
  	update_load_set(&se->load, NICE_0_LOAD);
  	se->parent = parent;
 +	INIT_LIST_HEAD(&se->inf_node);
 +	se->inf_slice_rem = 0;
++	se->inf_enq_ts = 0;
  }
  
  static DEFINE_MUTEX(shares_mutex);
-@@ -15532,6 +15086,300 @@ void print_cfs_stats(struct seq_file *m, int cpu)
+@@ -15532,6 +15086,306 @@ void print_cfs_stats(struct seq_file *m, int cpu)
  	rcu_read_unlock();
  }
  
 +#define INF_LABEL_CAP 32
 +#define INF_NOTE_CAP 48
 +#define INF_VW 8
-+#define INF_ROWS 11
++#define INF_ROWS 12
 +
 +static bool inf_fair_checked;
 +
@@ -1172,7 +1197,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +static int inf_fair_show(struct seq_file *m, void *v)
 +{
 +	u64 head = 0, tail = 0, exempt = 0, hog = 0;
-+	u64 preempt = 0, ytom = 0, fallback = 0, clamp = 0;
++	u64 preempt = 0, ytom = 0, fallback = 0, clamp = 0, wait = 0;
 +	/* qlast is a last-wins gauge across CPUs/groups. */
 +	u64 qlast = 0, qmin = 0, qmax = 0;
 +	const char *labels[INF_ROWS];
@@ -1199,6 +1224,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +			ytom += cfs_rq->inf_yield_to_moves;
 +			fallback += cfs_rq->inf_curr_fallback_picks;
 +			clamp += cfs_rq->inf_clamp_fires;
++			wait += cfs_rq->inf_wait_boosts;
 +			if (cfs_rq->inf_quantum_last)
 +				qlast = cfs_rq->inf_quantum_last;
 +			if (cfs_rq->inf_quantum_min &&
@@ -1222,6 +1248,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +		ytom += cfs_rq->inf_yield_to_moves;
 +		fallback += cfs_rq->inf_curr_fallback_picks;
 +		clamp += cfs_rq->inf_clamp_fires;
++		wait += cfs_rq->inf_wait_boosts;
 +		if (cfs_rq->inf_quantum_last)
 +			qlast = cfs_rq->inf_quantum_last;
 +		if (cfs_rq->inf_quantum_min &&
@@ -1247,12 +1274,14 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	notes[6] = "saved empty pick";
 +	labels[7] = "clamp_fires";
 +	notes[7] = "config-error signal";
-+	labels[8] = "quantum_last";
-+	notes[8] = "last ms gauge";
-+	labels[9] = "quantum_min";
-+	notes[9] = "min ms gauge";
-+	labels[10] = "quantum_max";
-+	notes[10] = "max ms gauge";
++	labels[8] = "wait_boosts";
++	notes[8] = "starve avoid";
++	labels[9] = "quantum_last";
++	notes[9] = "last ms gauge";
++	labels[10] = "quantum_min";
++	notes[10] = "min ms gauge";
++	labels[11] = "quantum_max";
++	notes[11] = "max ms gauge";
 +
 +	for (i = 0; i < INF_ROWS; i++) {
 +		size_t ll = strlen(labels[i]);
@@ -1318,12 +1347,14 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	inf_row(m, lw, INF_VW, nw, labels[6], vbuf, notes[6]);
 +	inf_pretty(vbuf, sizeof(vbuf), clamp);
 +	inf_row(m, lw, INF_VW, nw, labels[7], vbuf, notes[7]);
-+	inf_ms(vbuf, sizeof(vbuf), qlast);
++	inf_pretty(vbuf, sizeof(vbuf), wait);
 +	inf_row(m, lw, INF_VW, nw, labels[8], vbuf, notes[8]);
-+	inf_ms(vbuf, sizeof(vbuf), qmin);
++	inf_ms(vbuf, sizeof(vbuf), qlast);
 +	inf_row(m, lw, INF_VW, nw, labels[9], vbuf, notes[9]);
-+	inf_ms(vbuf, sizeof(vbuf), qmax);
++	inf_ms(vbuf, sizeof(vbuf), qmin);
 +	inf_row(m, lw, INF_VW, nw, labels[10], vbuf, notes[10]);
++	inf_ms(vbuf, sizeof(vbuf), qmax);
++	inf_row(m, lw, INF_VW, nw, labels[11], vbuf, notes[11]);
 +	emit_sep(m, lw, INF_VW, nw);
 +
 +	return 0;
@@ -1359,7 +1390,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  {
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -737,6 +737,28 @@ struct cfs_rq {
+@@ -737,6 +737,29 @@ struct cfs_rq {
  	u64			last_h_load_update;
  	struct sched_entity	*h_load_next;
  
@@ -1381,6 +1412,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	u64			inf_yield_to_moves;
 +	u64			inf_curr_fallback_picks;
 +	u64			inf_clamp_fires;
++	u64			inf_wait_boosts;
 +	u64			inf_quantum_last;
 +	u64			inf_quantum_min;
 +	u64			inf_quantum_max;
@@ -1390,11 +1422,12 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	/*
 --- a/init/init_task.c
 +++ b/init/init_task.c
-@@ -128,6 +128,7 @@ struct task_struct init_task
+@@ -128,6 +128,8 @@ struct task_struct init_task
  	},
  	.se		= {
  		.group_node 	= LIST_HEAD_INIT(init_task.se.group_node),
 +		.inf_node	= LIST_HEAD_INIT(init_task.se.inf_node),
++		.inf_enq_ts	= 0,
  	},
  	.rt		= {
  		.run_list	= LIST_HEAD_INIT(init_task.rt.run_list),
