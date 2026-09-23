@@ -334,7 +334,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  /*
-@@ -1149,73 +1040,35 @@ static inline void cancel_protect_slice(struct sched_entity *se)
+@@ -1149,73 +1040,36 @@ static inline void cancel_protect_slice(struct sched_entity *se)
   */
  static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq, bool protect)
  {
@@ -423,6 +423,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +		if (tail != head && tail->inf_enq_ts &&
 +		    rq_clock(rq_of(cfs_rq)) - tail->inf_enq_ts >
 +		    INFINITY_WAIT_BOUND_NS) {
++			/* wakeup+pick events; not unique tasks; may 2x. */
 +			cfs_rq->inf_wait_boosts++;
 +			return tail;
 +		}
@@ -917,10 +918,32 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	struct sched_entity *se = &donor->se, *pse = &p->se;
  	struct cfs_rq *cfs_rq = task_cfs_rq(donor);
  	int cse_is_idle, pse_is_idle;
-+	struct sched_entity *head;
++	struct sched_entity *head, *tail;
  
  	/*
  	 * XXX Getting preempted by higher class, try and find idle CPU?
+@@ -9928,16 +9529,13 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
+ 	pse_is_idle = se_is_idle(pse);
+ 
+ 	/*
+-	 * Preempt an idle entity in favor of a non-idle entity (and don't preempt
+-	 * in the inverse case).
++	 * Preempt an idle entity in favor of a non-idle entity (and don't
++	 * preempt in the inverse case).
+ 	 */
+ 	if (cse_is_idle && !pse_is_idle) {
+-		/*
+-		 * When non-idle entity preempt an idle entity,
+-		 * don't give idle entity slice protection.
+-		 */
+-		preempt_action = PREEMPT_WAKEUP_SHORT;
+-		goto preempt;
++		cfs_rq_of(pse)->inf_head_preempts++;
++		resched_curr(rq);
++		return;
+ 	}
+ 
+ 	if (cse_is_idle != pse_is_idle)
 @@ -9949,17 +9549,6 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
  	if (unlikely(!normal_policy(p->policy)))
  		return;
@@ -939,7 +962,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	/*
  	 * Ignore wakee preemption on WF_FORK as it is less likely that
  	 * there is shared data as exec often follow fork. Do not
-@@ -9969,47 +9558,17 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
+@@ -9969,47 +9558,28 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
  	if ((wake_flags & WF_FORK) || pse->sched_delayed)
  		return;
  
@@ -955,8 +978,8 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -		if (wake_flags & WF_SYNC)
 -			preempt_action = preempt_sync(rq, wake_flags, pse, se);
 -	}
-+	cfs_rq = cfs_rq_of(se);
-+	update_curr(cfs_rq);
++	update_curr(cfs_rq_of(se));
++	cfs_rq = cfs_rq_of(pse);
  
 -	switch (preempt_action) {
 -	case PREEMPT_WAKEUP_NONE:
@@ -990,7 +1013,18 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	head = list_first_entry(&cfs_rq->inf_list, struct sched_entity, inf_node);
 +	if (head == pse) {
 +		cfs_rq->inf_head_preempts++;
-+		resched_curr_lazy(rq);
++		resched_curr(rq);
++		return;
++	}
++
++	tail = list_last_entry(&cfs_rq->inf_list, struct sched_entity, inf_node);
++
++	if (tail == pse && tail->inf_enq_ts &&
++	    rq_clock(rq_of(cfs_rq)) - tail->inf_enq_ts >
++	    INFINITY_WAIT_BOUND_NS) {
++		/* wakeup+pick events; not unique tasks; may 2x. */
++		cfs_rq->inf_wait_boosts++;
++		resched_curr(rq);
 +	}
  	return;
  
