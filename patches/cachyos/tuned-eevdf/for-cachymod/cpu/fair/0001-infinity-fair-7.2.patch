@@ -484,7 +484,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  		resched_curr_lazy(rq);
  		clear_buddies(cfs_rq, curr);
  	}
-@@ -4573,155 +4395,32 @@ dequeue_load_avg(struct cfs_rq *cfs_rq,
+@@ -4573,155 +4395,34 @@ dequeue_load_avg(struct cfs_rq *cfs_rq,
  		    se_weight(se) * -se->avg.load_sum);
  }
  
@@ -620,6 +620,8 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 -	rescale_entity(se, weight, rel_vprot);
 -
  	update_load_set(&se->load, weight);
++	/* Infinity delta: queued change via dequeue/enqueue with clamp; */
++	/* curr stays off-list, so no sum change for the running entity. */
  
  	do {
  		u32 divider = get_pelt_divider(&se->avg);
@@ -839,12 +841,13 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  }
  
  static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags);
-@@ -6410,6 +5990,8 @@ pick_next_entity(struct rq *rq, struct cfs_rq *cfs_rq, bool protect)
+@@ -6410,6 +5990,9 @@ pick_next_entity(struct rq *rq, struct cfs_rq *cfs_rq, bool protect)
  	struct sched_entity *se;
  
  	se = pick_eevdf(cfs_rq, protect);
 +	if (!se)
 +		return NULL;
++	/* Infinity: no task_of here; task_of only after group descent. */
  	if (se->sched_delayed) {
  		dequeue_entities(rq, se, DEQUEUE_SLEEP | DEQUEUE_DELAYED);
  		/*
@@ -1343,7 +1346,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  {
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -737,6 +737,26 @@ struct cfs_rq {
+@@ -737,6 +737,28 @@ struct cfs_rq {
  	u64			last_h_load_update;
  	struct sched_entity	*h_load_next;
  
@@ -1351,6 +1354,8 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	 * Infinity-queue (inf) FIFO state. inf_w_sum is the sum of
 +	 * se->load.weight over entities on inf_list; load-only
 +	 * accounting, so shares are honored end to end.
++	 * Quantum gauges (last/min/max) are root-only; group quanta
++	 * follow the vanilla descent with no new path.
 +	 */
 +	struct list_head	inf_list;
 +	u32			inf_seq;

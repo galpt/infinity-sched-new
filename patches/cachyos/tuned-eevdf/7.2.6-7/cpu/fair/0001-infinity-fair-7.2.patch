@@ -1359,7 +1359,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  {
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -737,6 +737,26 @@ struct cfs_rq {
+@@ -737,6 +737,28 @@ struct cfs_rq {
  	u64			last_h_load_update;
  	struct sched_entity	*h_load_next;
  
@@ -1367,6 +1367,8 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
 +	 * Infinity-queue (inf) FIFO state. inf_w_sum is the sum of
 +	 * se->h_load.weight over entities on inf_list; never
 +	 * se->load.weight, so hierarchical shares are honored.
++	 * Only the root (&rq->cfs) uses inf_w_sum and the quantum
++	 * gauges; per-level list positions stay local.
 +	 */
 +	struct list_head	inf_list;
 +	u32			inf_seq;
