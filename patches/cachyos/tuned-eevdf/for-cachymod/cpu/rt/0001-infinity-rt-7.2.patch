@@ -5,7 +5,7 @@ Subject: [PATCH] infinity rt: timeslice neuter with bounded-LIFO
 
 RR slice mechanics neutered, policy plus POSIX kept.
 - struct rt_rq.inf_seq (bounded-LIFO 7+1) plus
-  struct sched_rt_entity.inf_slice_rem (fixed 1ms quantum);
+  struct sched_rt_entity.inf_slice_rem (fixed 100ms quantum);
   time_slice kept as unused storage.
 - __enqueue seq-gated head/tail, requeue always tail,
   task_tick fixed-quantum countdown, get_rr_interval 0.
@@ -57,17 +57,18 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  
 --- a/kernel/sched/rt.c
 +++ b/kernel/sched/rt.c
-@@ -6,7 +6,15 @@
+@@ -6,7 +6,16 @@
  
  #include "sched.h"
  #include "pelt.h"
 +#include <linux/debugfs.h>
  
 +/*
-+ * Infinity RT: fixed 1ms quantum for RR neutering. RR timeslice state is
++ * Infinity RT: fixed 100ms quantum for RR neutering (frozen,
++ * HZ-independent nominal). RR timeslice state is
 + * retained only for /proc ABI compatibility and is otherwise unused.
 + */
-+#define INFINITY_RT_Q_BASE_NS	1000000ULL
++#define INFINITY_RT_Q_BASE_NS	100000000ULL /* ns */
 +
 +/* Unused storage, kept for /proc ABI compatibility. */
  int sched_rr_timeslice = RR_TIMESLICE;
@@ -152,7 +153,7 @@ Signed-off-by: Galih Tama <galpt@v.recipes>
  	/*
 -	 * Requeue to the end of queue if we (and all of our ancestors) are not
 -	 * the only element on the queue
-+	 * Infinity: fixed 1ms quantum countdown. Zero means recharge and
++	 * Infinity: fixed 100ms quantum countdown. Zero means recharge and
 +	 * forced-tail requeue with resched.
  	 */
 -	for_each_sched_rt_entity(rt_se) {
