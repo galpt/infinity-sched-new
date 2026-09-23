@@ -18,6 +18,18 @@ The base quantum is frozen with no sysctl, Kconfig, proc, or debugfs
 tuning knob beyond discipline-native debugfs stats. No vanilla slice
 remnants remain and the message carries no internal references.
 
+Adaptive core grouping is advisory-only with frozen estimator:
+2s windows, 1s burn in one window to demote, sub-80ms across the
+dwell to promote, 4s dwell no-flap, 10pp resize hysteresis.
+Burn accumulates read-only in update_curr; windows close
+tick-only via inf_group_tick with cmpxchg-claimed publish.
+Hog target is ceil(frac*N/100) clamped [1, N-1] with LLC-unit
+hog-packed masks plus generation. select_task_rq advises via
+inf_steer_cpu with empty-hog early return to stock SIS; stock
+SIS bodies untouched. Debugfs adds ten grouping rows with the
+box contract intact. No-hog and N=1/small-LLC park to stock
+behavior identically. Hunks 38/38/39, verified clean.
+
 Signed-off-by: Galih Tama <galpt@v.recipes>
 ---
 --- a/include/linux/sched.h
